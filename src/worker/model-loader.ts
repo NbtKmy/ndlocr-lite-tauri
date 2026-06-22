@@ -17,6 +17,13 @@ export function setModelBaseUrl(url: string) {
   _modelBaseUrl = url
 }
 
+// IPC経由でメインスレッドから転送されたモデルバッファのキャッシュ
+const _preloadedBuffers = new Map<string, ArrayBuffer>()
+
+export function setPreloadedBuffer(modelType: string, buffer: ArrayBuffer) {
+  _preloadedBuffers.set(modelType, buffer)
+}
+
 function getModelUrl(modelType: string): string {
   const base = _modelBaseUrl
   const map: Record<string, string> = {
@@ -79,6 +86,13 @@ export async function loadModel(
   onProgress?: (progress: number) => void,
   _language?: RecognitionLanguage
 ): Promise<ArrayBuffer> {
+  const preloaded = _preloadedBuffers.get(modelType)
+  if (preloaded) {
+    console.log(`[model-loader] Using preloaded buffer for ${modelType}`)
+    onProgress?.(1)
+    return preloaded
+  }
+
   const modelUrl = getModelUrl(modelType)
   if (!modelUrl) {
     throw new Error(`Unknown model type: ${modelType}`)
