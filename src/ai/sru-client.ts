@@ -263,6 +263,7 @@ export async function searchMonthlyAcquisitions(
   const records = Array.from(doc.querySelectorAll('record'))
 
   const results: SruMetadata[] = []
+  const seenMmsIds = new Set<string>()
 
   for (const record of records) {
     // ─── ヘルパー（レコードスコープ）────────────────────────────────────────
@@ -332,6 +333,8 @@ export async function searchMonthlyAcquisitions(
       mmsId = record.querySelector('controlfield[tag="001"]')?.textContent?.trim() ?? null
     }
     if (!mmsId) continue
+    if (seenMmsIds.has(mmsId)) continue
+    seenMmsIds.add(mmsId)
 
     // ─── メタデータ収集 ──────────────────────────────────────────────────────
     const titleRomanized =

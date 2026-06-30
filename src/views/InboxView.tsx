@@ -388,6 +388,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
 
         await pipeline.writeStage(book.book_id, 'ocr', ocrPages)
         await pipeline.setStatus(book.book_id, 'ocr_done')
+        await refresh()
       }
 
       setProcessLog('LLM構造化中…')
@@ -727,9 +728,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
           <button onClick={refresh} className="btn-secondary">更新</button>
         </div>
         {message && <p className="inbox-message">{message}</p>}
-        {processingBookId && (
+        {(processingBookId || processLog) && (
           <div className="process-log-bar">
-            <span className="spinner">⟳</span> <strong>{processingBookId}</strong>: {processLog}
+            {processingBookId && <><span className="spinner">⟳</span> <strong>{processingBookId}</strong>: </>}
+            {processLog}
           </div>
         )}
       </div>
