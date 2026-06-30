@@ -3,6 +3,8 @@ export interface SruConfig {
   holdingFilterField: string
   holdingFilterValue: string
   sourceLabel: string
+  monthlySearchField: string   // ローカルフィールド番号 (例: "990")
+  monthlySearchPrefix: string  // クエリプレフィックス (例: "UAOIJ-")
 }
 
 export const DEFAULT_SRU_CONFIG: SruConfig = {
@@ -10,6 +12,8 @@ export const DEFAULT_SRU_CONFIG: SruConfig = {
   holdingFilterField: 'b',
   holdingFilterValue: 'UAOI',
   sourceLabel: 'SLSP/UZB',
+  monthlySearchField: '990',
+  monthlySearchPrefix: '',
 }
 
 const STORAGE_KEY = 'ndlocr_sru_config'

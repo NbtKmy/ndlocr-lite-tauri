@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { pipeline } from '../pipeline/api'
 import type { BookManifest, BookStatus, OcrPage } from '../pipeline/types'
 import { structureToc } from '../ai/toc-structuring'
-import { resolveIsbn } from '../ai/sru-client'
+import { resolveIsbn, searchMonthlyAcquisitions } from '../ai/sru-client'
 import type { ResolveFailReason } from '../ai/sru-client'
 import { loadSruConfig, saveSruConfig, DEFAULT_SRU_CONFIG } from '../utils/sruConfig'
 import type { SruConfig } from '../utils/sruConfig'
@@ -93,11 +93,19 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
   const [processingBookId, setProcessingBookId] = useState<string | null>(null)
   const [processLog, setProcessLog] = useState('')
 
+  // 入力モード切替
+  const [inputMode, setInputMode] = useState<'isbn' | 'monthly'>('isbn')
+
   // ISBN入力 & 解決ログ
   const [isbnInput, setIsbnInput] = useState('')
   const [resolutions, setResolutions] = useState<IsbnResolution[]>([])
   const [isResolving, setIsResolving] = useState(false)
   const csvInputRef = useRef<HTMLInputElement>(null)
+
+  // 月次入荷検索
+  const [monthlyYear, setMonthlyYear] = useState(() => new Date().getFullYear())
+  const [monthlyMonth, setMonthlyMonth] = useState(() => new Date().getMonth() + 1)
+  const [isMonthlySearching, setIsMonthlySearching] = useState(false)
 
   // パイプライン設定パネル（親のsettingsOpenで制御）
   const [sruDraft, setSruDraft] = useState<SruConfig>(loadSruConfig)
@@ -228,6 +236,79 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
     e.target.value = ''
   }, [resolveIsbnList])
 
+  /** 月次入荷検索: SRUで年月検索 → PDF付き全件をキューに追加 */
+  const handleMonthlySearch = useCallback(async () => {
+    setIsMonthlySearching(true)
+    setMessage('')
+
+    const sruConfig = loadSruConfig()
+    const knownMmsIds = new Set(books.map(b => b.book_id))
+
+    let results: Awaited<ReturnType<typeof searchMonthlyAcquisitions>>
+    try {
+      results = await searchMonthlyAcquisitions(monthlyYear, monthlyMonth, sruConfig)
+    } catch (e) {
+      setMessage(`月次検索エラー: ${e}`)
+      setIsMonthlySearching(false)
+      return
+    }
+
+    if (results.length === 0) {
+      setMessage(`${monthlyYear}年${monthlyMonth}月の入荷書籍（目次PDF付き）は見つかりませんでした`)
+      setIsMonthlySearching(false)
+      return
+    }
+
+    // 解決中エントリを初期化（MMS IDをラベルとして使用）
+    setResolutions(prev => [
+      ...prev,
+      ...results.map(m => ({
+        isbn: m.mmsId,
+        status: 'resolving' as const,
+        mmsId: m.mmsId,
+        title: m.titleOriginal ?? m.titleRomanized,
+      })),
+    ])
+
+    const seenInBatch = new Set<string>()
+
+    for (const metadata of results) {
+      const { mmsId } = metadata
+
+      if (knownMmsIds.has(mmsId) || seenInBatch.has(mmsId)) {
+        setResolutions(prev =>
+          prev.map(r => r.isbn === mmsId ? { ...r, status: 'duplicate' } : r)
+        )
+        continue
+      }
+
+      seenInBatch.add(mmsId)
+
+      try {
+        const pdfPath = await pipeline.downloadPdf(metadata.tocPdfUrl, `${mmsId}.pdf`)
+        await pipeline.getOrCreateBook(mmsId, pdfPath)
+        await pipeline.writeStage(mmsId, 'sru_meta', metadata)
+        knownMmsIds.add(mmsId)
+
+        setResolutions(prev =>
+          prev.map(r => r.isbn === mmsId ? { ...r, status: 'ok' } : r)
+        )
+      } catch (e) {
+        setResolutions(prev =>
+          prev.map(r =>
+            r.isbn === mmsId ? { ...r, status: 'fetch_error', detail: String(e) } : r
+          )
+        )
+      }
+    }
+
+    await refresh()
+    setIsMonthlySearching(false)
+    const added = seenInBatch.size
+    const skipped = results.length - added
+    setMessage(`月次検索完了: ${added}件追加${skipped > 0 ? `、${skipped}件スキップ（重複）` : ''}`)
+  }, [books, monthlyYear, monthlyMonth, refresh])
+
   // ─── 既存機能 ────────────────────────────────────────────────────────────────
 
   const deleteBook = useCallback(async (bookId: string) => {
@@ -331,10 +412,21 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
 
   return (
     <div className="inbox-view" style={hidden ? { display: 'none' } : undefined}>
-      {/* ── ISBN入力パネル ── */}
+      {/* ── 書籍追加パネル ── */}
       <section className="isbn-input-panel">
-        <div className="isbn-panel-header">
-          <h3>ISBN から追加</h3>
+        <div className="inbox-mode-tabs">
+          <button
+            className={`inbox-mode-tab${inputMode === 'isbn' ? ' active' : ''}`}
+            onClick={() => setInputMode('isbn')}
+          >
+            ISBN 入力
+          </button>
+          <button
+            className={`inbox-mode-tab${inputMode === 'monthly' ? ' active' : ''}`}
+            onClick={() => setInputMode('monthly')}
+          >
+            月次入荷検索
+          </button>
         </div>
 
         {/* パイプライン設定パネル（AppBarの設定ボタンで開閉） */}
@@ -371,6 +463,20 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 value={sruDraft.sourceLabel}
                 onChange={e => setSruDraft(d => ({ ...d, sourceLabel: e.target.value }))}
                 placeholder="SLSP/UZB"
+              />
+              <label className="sru-label">月次検索フィールド番号</label>
+              <input
+                className="sru-input sru-input-short"
+                value={sruDraft.monthlySearchField}
+                onChange={e => setSruDraft(d => ({ ...d, monthlySearchField: e.target.value }))}
+                placeholder="990"
+              />
+              <label className="sru-label">月次検索プレフィックス</label>
+              <input
+                className="sru-input sru-input-short"
+                value={sruDraft.monthlySearchPrefix}
+                onChange={e => setSruDraft(d => ({ ...d, monthlySearchPrefix: e.target.value }))}
+                placeholder="例: UAOIJ-"
               />
             </div>
 
@@ -483,40 +589,82 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
           </div>
         )}
 
-        <div className="isbn-input-row">
-          <input
-            className="isbn-input"
-            type="text"
-            placeholder="ISBN-13 または ISBN-10"
-            value={isbnInput}
-            onChange={e => setIsbnInput(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') handleIsbnAdd() }}
-            disabled={isResolving}
-          />
-          <button
-            className="btn-primary"
-            onClick={handleIsbnAdd}
-            disabled={!isbnInput.trim() || isResolving}
-          >
-            追加
-          </button>
-          <button
-            className="btn-secondary"
-            onClick={() => csvInputRef.current?.click()}
-            disabled={isResolving}
-          >
-            CSV一括
-          </button>
-          <input
-            ref={csvInputRef}
-            type="file"
-            accept=".csv,.txt"
-            style={{ display: 'none' }}
-            onChange={handleCsvUpload}
-          />
-          {isResolving && <span className="resolving-indicator">解決中…</span>}
-        </div>
-        <p className="isbn-hint">CSVは1行1ISBN形式（ハイフン有無どちらでも可）</p>
+        {inputMode === 'isbn' && (
+          <>
+            <div className="isbn-input-row">
+              <input
+                className="isbn-input"
+                type="text"
+                placeholder="ISBN-13 または ISBN-10"
+                value={isbnInput}
+                onChange={e => setIsbnInput(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Enter') handleIsbnAdd() }}
+                disabled={isResolving}
+              />
+              <button
+                className="btn-primary"
+                onClick={handleIsbnAdd}
+                disabled={!isbnInput.trim() || isResolving}
+              >
+                追加
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => csvInputRef.current?.click()}
+                disabled={isResolving}
+              >
+                CSV一括
+              </button>
+              <input
+                ref={csvInputRef}
+                type="file"
+                accept=".csv,.txt"
+                style={{ display: 'none' }}
+                onChange={handleCsvUpload}
+              />
+              {isResolving && <span className="resolving-indicator">解決中…</span>}
+            </div>
+            <p className="isbn-hint">CSVは1行1ISBN形式（ハイフン有無どちらでも可）</p>
+          </>
+        )}
+
+        {inputMode === 'monthly' && (
+          <div className="monthly-search-panel">
+            <div className="monthly-search-row">
+              <label className="monthly-search-label">年</label>
+              <select
+                className="monthly-search-select"
+                value={monthlyYear}
+                onChange={e => setMonthlyYear(Number(e.target.value))}
+                disabled={isMonthlySearching}
+              >
+                {[new Date().getFullYear() - 2, new Date().getFullYear() - 1, new Date().getFullYear(), new Date().getFullYear() + 1].map(y => (
+                  <option key={y} value={y}>{y}</option>
+                ))}
+              </select>
+              <label className="monthly-search-label">月</label>
+              <select
+                className="monthly-search-select"
+                value={monthlyMonth}
+                onChange={e => setMonthlyMonth(Number(e.target.value))}
+                disabled={isMonthlySearching}
+              >
+                {Array.from({ length: 12 }, (_, i) => i + 1).map(m => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <button
+                className="btn-primary"
+                onClick={handleMonthlySearch}
+                disabled={isMonthlySearching}
+              >
+                {isMonthlySearching ? '検索中…' : '検索して全件追加'}
+              </button>
+              {isMonthlySearching && <span className="resolving-indicator">取得中…</span>}
+            </div>
+            <p className="isbn-hint">目次PDFがある書籍のみキューに追加されます</p>
+          </div>
+        )}
 
         {/* 解決ログ */}
         {resolutions.length > 0 && (
