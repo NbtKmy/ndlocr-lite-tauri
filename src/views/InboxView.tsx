@@ -359,38 +359,43 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
     setProcessLog('')
     try {
       const ollamaConfig = loadOllamaConfig()
-      const images = await loadPdfFromPath(book.source_pdf)
-      const ocrPages: OcrPage[] = []
+      let ocrPages: OcrPage[]
 
-      for (let i = 0; i < images.length; i++) {
-        setProcessLog(`OCR中… ${i + 1}/${images.length} ページ`)
-        const result = await processImage(images[i], i, images.length)
-        ocrPages.push({
-          page_index: i,
-          full_text: result.fullText,
-          text_blocks: result.textBlocks.map(b => ({
-            text: b.text,
-            confidence: b.confidence,
-            bbox: [b.x, b.y, b.x + b.width, b.y + b.height] as [number,number,number,number],
-            reading_order: b.readingOrder ?? 0,
-          })),
-          processing_time_ms: result.processingTimeMs,
-        })
+      if (book.status === 'ocr_done') {
+        // OCR済み書籍: ディスクの既存OCRデータを使用してLLMのみ実行
+        setProcessLog('OCRデータを読み込み中…')
+        ocrPages = await pipeline.readStage<OcrPage[]>(book.book_id, 'ocr')
+      } else {
+        // 未処理書籍: OCR → LLM 全処理
+        const images = await loadPdfFromPath(book.source_pdf)
+        ocrPages = []
+
+        for (let i = 0; i < images.length; i++) {
+          setProcessLog(`OCR中… ${i + 1}/${images.length} ページ`)
+          const result = await processImage(images[i], i, images.length)
+          ocrPages.push({
+            page_index: i,
+            full_text: result.fullText,
+            text_blocks: result.textBlocks.map(b => ({
+              text: b.text,
+              confidence: b.confidence,
+              bbox: [b.x, b.y, b.x + b.width, b.y + b.height] as [number,number,number,number],
+              reading_order: b.readingOrder ?? 0,
+            })),
+            processing_time_ms: result.processingTimeMs,
+          })
+        }
+
+        await pipeline.writeStage(book.book_id, 'ocr', ocrPages)
+        await pipeline.setStatus(book.book_id, 'ocr_done')
       }
 
-      await pipeline.writeStage(book.book_id, 'ocr', ocrPages)
-      await pipeline.setStatus(book.book_id, 'ocr_done')
-      setProcessLog('OCR完了。LLM構造化中…')
-
-      // useVision=true の場合、全ページ画像を渡す
-      const pageImages = ollamaConfig.useVision
-        ? Object.fromEntries(images.map((img, i) => [i, img.thumbnailDataUrl]))
-        : undefined
+      setProcessLog('LLM構造化中…')
 
       const { entries } = await structureToc(ocrPages, {
         model: ollamaConfig.model,
         ollamaUrl: ollamaConfig.baseUrl || undefined,
-        pageImages,
+        pageImages: undefined,  // vision: OCR済みパスではPDF未ロードのため無効
       })
       await pipeline.writeStage(book.book_id, 'draft', entries)
       await pipeline.setStatus(book.book_id, 'review_pending')
@@ -403,12 +408,13 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
     }
   }, [isReady, processImage, ensureLanguage, refresh])
 
-  // ─── 表示用グループ ──────────────────────────────────────────────────────────
+  // ─── 表示用グループ（ワークフロー順: 取り込み済 → 処理済 → レビュー待ち → 出力済）──
 
   const pending = books.filter(b => b.status === 'pending')
+  const ocrDone = books.filter(b => b.status === 'ocr_done')
   const reviewPending = books.filter(b => b.status === 'review_pending' || b.status === 'llm_done')
   const exported = books.filter(b => b.status === 'exported')
-  const others = books.filter(b => !['pending', 'review_pending', 'llm_done', 'exported'].includes(b.status))
+  const others = books.filter(b => !['pending', 'ocr_done', 'review_pending', 'llm_done', 'exported'].includes(b.status))
 
   return (
     <div className="inbox-view" style={hidden ? { display: 'none' } : undefined}>
@@ -728,12 +734,12 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
         )}
       </div>
 
-      {/* ── レビュー待ち ── */}
-      {reviewPending.length > 0 && (
+      {/* ── 取り込み済み・未処理 ── */}
+      {pending.length > 0 && (
         <section className="inbox-section">
-          <h3>レビュー待ち ({reviewPending.length})</h3>
+          <h3>取り込み済み・未処理 ({pending.length})</h3>
           <div className="book-list">
-            {reviewPending.map(book => (
+            {pending.map(book => (
               <BookCard
                 key={book.book_id} book={book}
                 onReview={onReview}
@@ -747,12 +753,31 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
         </section>
       )}
 
-      {/* ── 未処理 ── */}
-      {pending.length > 0 && (
+      {/* ── OCR済み・LLM待ち ── */}
+      {ocrDone.length > 0 && (
         <section className="inbox-section">
-          <h3>未処理 ({pending.length})</h3>
+          <h3>OCR済み・LLM待ち ({ocrDone.length})</h3>
           <div className="book-list">
-            {pending.map(book => (
+            {ocrDone.map(book => (
+              <BookCard
+                key={book.book_id} book={book}
+                onReview={onReview}
+                onProcess={processBook}
+                onDelete={deleteBook}
+                isProcessing={processingBookId === book.book_id}
+                isReady={true}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── レビュー待ち ── */}
+      {reviewPending.length > 0 && (
+        <section className="inbox-section">
+          <h3>レビュー待ち ({reviewPending.length})</h3>
+          <div className="book-list">
+            {reviewPending.map(book => (
               <BookCard
                 key={book.book_id} book={book}
                 onReview={onReview}
@@ -785,10 +810,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
         </section>
       )}
 
-      {/* ── 処理済み ── */}
+      {/* ── その他（エラー・解決失敗等） ── */}
       {others.length > 0 && (
         <section className="inbox-section">
-          <h3>処理済み ({others.length})</h3>
+          <h3>その他 ({others.length})</h3>
           <div className="book-list">
             {others.map(book => (
               <BookCard

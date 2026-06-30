@@ -188,6 +188,11 @@ async fn delete_book(app: AppHandle, book_id: String) -> Result<(), String> {
     if dir.exists() {
         fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     }
+    // inbox PDF も削除してキャッシュ残留・重複インポートを防ぐ
+    let pdf = data_dir(&app).join("inbox").join(format!("{book_id}.pdf"));
+    if pdf.exists() {
+        let _ = fs::remove_file(&pdf);
+    }
     Ok(())
 }
 
