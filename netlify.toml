@@ -1,0 +1,31 @@
+[build]
+  publish = "dist"
+  command = "npm run build"
+
+# SharedArrayBufferに必要なCOOP/COEPヘッダー + セキュリティヘッダーを全リクエストに付与
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Cross-Origin-Opener-Policy = "same-origin"
+    Cross-Origin-Embedder-Policy = "require-corp"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+
+# 静的アセットの長期キャッシュ（ハッシュ付きファイル名なので安全）
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# ONNXモデルファイルの長期キャッシュ
+[[headers]]
+  for = "/models/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"
+
+# SPAフォールバック
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

@@ -1,39 +1,45 @@
 import { StrictMode, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import './index.css'
-import App from './App.tsx'
 import { InboxView } from './views/InboxView.tsx'
 import { ReviewView } from './views/ReviewView.tsx'
+import { CreditsView } from './views/CreditsView.tsx'
+import { AppBar } from './components/layout/AppBar.tsx'
+import { useTheme } from './hooks/useTheme.ts'
+import { useI18n } from './hooks/useI18n.ts'
 
 type View =
-  | { mode: 'ocr' }
   | { mode: 'inbox' }
   | { mode: 'review'; bookId: string }
+  | { mode: 'credits' }
 
 function Root() {
-  const [view, setView] = useState<View>({ mode: 'ocr' })
+  const [view, setView] = useState<View>({ mode: 'inbox' })
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const { theme, toggleTheme } = useTheme()
+  const { lang, toggleLanguage } = useI18n()
+
+  const mainView = view.mode === 'review' ? 'inbox' : view.mode as 'inbox' | 'credits'
 
   return (
     <>
-      {/* モード切替タブ */}
-      <div className="mode-tabs">
-        <button
-          className={`mode-tab ${view.mode === 'inbox' || view.mode === 'review' ? 'active' : ''}`}
-          onClick={() => setView({ mode: 'inbox' })}
-        >
-          パイプライン
-        </button>
-        <button
-          className={`mode-tab ${view.mode === 'ocr' ? 'active' : ''}`}
-          onClick={() => setView({ mode: 'ocr' })}
-        >
-          OCR
-        </button>
-      </div>
+      <AppBar
+        lang={lang}
+        onToggleLang={toggleLanguage}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        view={mainView}
+        onViewChange={(v) => setView({ mode: v })}
+        onOpenSettings={() => setSettingsOpen(v => !v)}
+      />
 
-      {view.mode === 'ocr' && <App />}
-      {view.mode === 'inbox' && (
-        <InboxView onReview={(bookId) => setView({ mode: 'review', bookId })} />
+      {(view.mode === 'inbox' || view.mode === 'review') && (
+        <InboxView
+          onReview={(bookId) => setView({ mode: 'review', bookId })}
+          settingsOpen={settingsOpen}
+          onSettingsClose={() => setSettingsOpen(false)}
+          hidden={view.mode === 'review'}
+        />
       )}
       {view.mode === 'review' && (
         <ReviewView
@@ -41,6 +47,7 @@ function Root() {
           onBack={() => setView({ mode: 'inbox' })}
         />
       )}
+      {view.mode === 'credits' && <CreditsView />}
     </>
   )
 }

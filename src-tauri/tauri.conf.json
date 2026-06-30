@@ -17,10 +17,7 @@
         "height": 900,
         "resizable": true,
         "fullscreen": false,
-        "dragDropEnabled": false,
-        "webviewAttributes": {
-          "devTools": true
-        }
+        "dragDropEnabled": false
       }
     ],
     "security": {
@@ -28,6 +25,10 @@
       "assetProtocol": {
         "enable": true,
         "scope": ["$RESOURCE/**"]
+      },
+      "headers": {
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Cross-Origin-Embedder-Policy": "require-corp"
       }
     }
   },

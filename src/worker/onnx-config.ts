@@ -1,0 +1,45 @@
+/**
+ * ONNX Runtime Web 設定
+ * Web Worker内での統一設定
+ *
+ * onnxruntime-web/wasm を使用（JSEP/WebGPU不要、CPU専用）
+ * Viteの?url importでWASMのハッシュ付きURLを取得し、
+ * CDN不要・COEP対応の同一オリジン配信を実現する
+ */
+
+import * as ort from 'onnxruntime-web/wasm'
+
+function initializeONNX() {
+  // SharedArrayBuffer不要のシングルスレッドSIMD WASMを使用（Tauri WKWebView対応）
+  // public/wasm/ に配置した静的ファイルを参照（?urlインポートはpackage.json exportsに未掲載）
+  ort.env.wasm.wasmPaths = '/wasm/'
+  ort.env.wasm.numThreads = 1
+  ort.env.logLevel = 'warning'
+  ort.env.wasm.proxy = false
+}
+
+export async function createSession(
+  modelData: ArrayBuffer,
+  options: Partial<ort.InferenceSession.SessionOptions> = {}
+): Promise<ort.InferenceSession> {
+  const defaultOptions: ort.InferenceSession.SessionOptions = {
+    executionProviders: ['wasm'],
+    logSeverityLevel: 4,
+    graphOptimizationLevel: 'basic',
+    enableCpuMemArena: false,
+    enableMemPattern: false,
+    ...options,
+  }
+
+  try {
+    const session = await ort.InferenceSession.create(modelData, defaultOptions)
+    return session
+  } catch (error) {
+    console.error('Failed to create ONNX session:', error)
+    throw error
+  }
+}
+
+initializeONNX()
+
+export { ort }
