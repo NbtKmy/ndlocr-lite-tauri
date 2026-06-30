@@ -246,7 +246,7 @@ export async function searchMonthlyAcquisitions(
   config: SruConfig
 ): Promise<SruMetadata[]> {
   const mm = String(month).padStart(2, '0')
-  const query = `alma.local_field_${config.monthlySearchField}=${config.monthlySearchPrefix}${year}${mm}*`
+  const query = `alma.local_field_${config.monthlySearchField} all ${config.monthlySearchPrefix}${year}${mm}*`
   const url =
     `${config.sruEndpoint}?version=1.2&operation=searchRetrieve` +
     `&recordSchema=marcxml&maximumRecords=100&query=${encodeURIComponent(query)}`

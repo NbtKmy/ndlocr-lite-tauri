@@ -345,7 +345,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
   }
 
   const processBook = useCallback(async (book: BookManifest) => {
-    if (!isReady) {
+    if (!isReady && book.status !== 'ocr_done') {
       try {
         setMessage('OCRワーカーを初期化中…')
         await ensureLanguage(getRecognitionLanguage(loadDocumentLanguage()))
