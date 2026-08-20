@@ -25,6 +25,7 @@ const STATUS_LABEL: Record<BookStatus, string> = {
   review_pending: 'レビュー待ち',
   approved: '承認済',
   exported: '出力済',
+  exported_no_embed: '埋め込みなし出力',
 }
 const STATUS_COLOR: Record<BookStatus, string> = {
   resolving: '#607d8b',
@@ -35,6 +36,7 @@ const STATUS_COLOR: Record<BookStatus, string> = {
   review_pending: '#ff9800',
   approved: '#4caf50',
   exported: '#009688',
+  exported_no_embed: '#e65100',
 }
 
 const RESOLVE_LABEL: Record<string, string> = {
@@ -414,8 +416,8 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
   const pending = books.filter(b => b.status === 'pending')
   const ocrDone = books.filter(b => b.status === 'ocr_done')
   const reviewPending = books.filter(b => b.status === 'review_pending' || b.status === 'llm_done')
-  const exported = books.filter(b => b.status === 'exported')
-  const others = books.filter(b => !['pending', 'ocr_done', 'review_pending', 'llm_done', 'exported'].includes(b.status))
+  const exported = books.filter(b => b.status === 'exported' || b.status === 'exported_no_embed')
+  const others = books.filter(b => !['pending', 'ocr_done', 'review_pending', 'llm_done', 'exported', 'exported_no_embed'].includes(b.status))
 
   return (
     <div className="inbox-view" style={hidden ? { display: 'none' } : undefined}>
@@ -854,7 +856,7 @@ function BookCard({
   isReady: boolean
 }) {
   const canProcess = (book.status === 'pending' || book.status === 'ocr_done') && isReady && !isProcessing
-  const canReview = (book.status === 'review_pending' || book.status === 'llm_done' || book.status === 'exported') && !isProcessing
+  const canReview = (book.status === 'review_pending' || book.status === 'llm_done' || book.status === 'exported' || book.status === 'exported_no_embed') && !isProcessing
 
   return (
     <div className={`book-card ${isProcessing ? 'book-card-processing' : ''}`}>

@@ -15,6 +15,7 @@ ISBN入力から始まる目次PDF自動取得・OCR・ローカルLLMによる�
 - **Human-in-the-loop レビューUI** — ReviewViewで自動構造化結果を確認・編集。ページフィルタ、テーブル/Markdown切替表示、自動保存機能
 - **書籍レベル埋め込み** — bge-m3で書籍タイトル＆件名から埋め込みベクトルを生成（検索・集計用）
 - **JSONL出力** — 処理済み目次データを構造化JSON形式で出力（PostgreSQL投入可能）。出力先フォルダはUI上で指定可能
+- **目次PDF出力** — 目次見出しと各節の著者名を1書籍1PDFファイルとして出力（ファイル名はMMS ID）。ReviewViewから任意のタイミングで生成可能
 
 ### OCRタブ（ブラウザ内処理）
 
@@ -272,6 +273,7 @@ npm run mcp-server
 | ndlocrlite-web（Web移植） | LICENSEファイルに準拠 | 橋本雄太氏（国立歴史民俗博物館） |
 | UI拡張機能（ダークモード、画像前処理、多言語UI等） | MIT License | 宮川創氏（筑波大学） |
 | NDLOCR Lite for TOC（パイプライン機能、UI改修） | MIT License | ogwata |
+| IPAexゴシック（目次PDF出力用フォント） | IPAフォントライセンスv1.0 | 独立行政法人情報処理推進機構（IPA） |
 
 ### 上流プロジェクト・アルゴリズム
 
@@ -289,6 +291,10 @@ npm run mcp-server
   - 縦書き表示モード
 
 ## 変更履歴
+
+### v0.16.0（2026-08-20）
+
+- feat: 目次PDF出力機能を追加。目次見出し・著者名を1書籍1PDF（ファイル名はMMS ID）で出力。ReviewViewに「PDF出力」ボタンを追加
 
 ### v0.14.0（2026-03-27）
 

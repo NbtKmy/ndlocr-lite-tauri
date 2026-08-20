@@ -7,6 +7,7 @@ export type BookStatus =
   | 'review_pending'
   | 'approved'
   | 'exported'
+  | 'exported_no_embed'
 
 export interface BookManifest {
   book_id: string

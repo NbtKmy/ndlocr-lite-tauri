@@ -124,7 +124,8 @@ ndlocr-lite-web-ai/
 │   │   ├── api.ts                 # Tauri invoke ラッパー（型付け・エラー変換）
 │   │   └── types.ts               # BookManifest / TocEntry / OutputBook 等の型定義
 │   ├── output/
-│   │   └── writer.ts              # JSONL出力（books.jsonl / entries.jsonl）
+│   │   ├── writer.ts              # JSONL出力（books.jsonl / entries.jsonl）
+│   │   └── tocPdf.ts              # 目次PDF出力（1書籍1PDF、pdf-lib + IPAexゴシック）
 │   ├── views/
 │   │   ├── InboxView.tsx          # 書籍キュー（ISBN入力・CSV一括・SRU解決ログ・処理状態管理）
 │   │   ├── ReviewView.tsx         # human-in-the-loop レビュー（PDF表示・エントリ編集・自動保存・出力確認）
@@ -153,6 +154,9 @@ ndlocr-lite-web-ai/
 ├── docs/
 │   ├── NDLOCR-Lite-Web-AI-開発計画書.md
 │   └── output-schema.md           # postgres投入スキーマ定義
+├── public/
+│   └── fonts/
+│       └── ipaexg.ttf             # 目次PDF出力用日本語フォント（IPAexゴシック）
 ├── DESIGN.md                      # パイプライン設計仕様（SRU連携・レビューUI修正計画）
 ├── CLAUDE.md                      # このファイル
 ├── netlify.toml              # Netlifyデプロイ設定（COOP/COEPヘッダー）
@@ -182,12 +186,14 @@ ISBN入力（単体 / CSV一括）
     - 承認時: 出力先確認ダイアログ（フォルダ選択可）
   → 埋め込み（bge-m3: チャンクレベル + 書籍レベル）
   → JSONL出力（books.jsonl + entries.jsonl、出力先設定可）
+  → 目次PDF出力（任意・手動: ReviewViewの「PDF出力」ボタン、1書籍1PDF、ファイル名はMMS ID）
 
 データパス（macOS）:
   ~/Library/Application Support/com.nobu.ndltococr/data/
     inbox/     # ダウンロードした目次PDF
     work/{mmsId}/  # manifest.json / ocr.json / draft.json / sru_meta.json / review.json
     output/    # books.jsonl / entries.jsonl（設定で変更可）
+      toc_pdf/{mmsId}.pdf  # 目次PDF（見出し・著者名、ページ番号なし）
     done/      # 処理済みPDF（将来用）
 ```
 
@@ -227,6 +233,7 @@ ISBN入力（単体 / CSV一括）
 - [x] 書籍レベル埋め込み（bge-m3, title+subjects）+ チャンクレベル埋め込み（親見出し前置）
 - [x] JSONL出力（books.jsonl / entries.jsonl）・出力先設定（フォルダ選択）・再出力対応
 - [x] MARC 880リンク解決バグ修正（/Jpanスクリプトコード除去）
+- [x] 目次PDF出力（pdf-lib + IPAexゴシック、1書籍1PDF、ReviewViewから手動生成）
 - [ ] LLMプロンプト品質改善（qwen2.5系での構造化精度、保留中）
 
 ## UI設計仕様
@@ -440,6 +447,7 @@ Cross-Origin-Embedder-Policy: require-corp
 - OCRモデル・アルゴリズム: NDLOCR-Lite（国立国会図書館、CC BY 4.0）
 - Web移植ベースコード: ndlocrlite-web（橋本雄太氏）
 - UI拡張機能（ダークモード、画像前処理、多言語UI等）: 宮川創氏（筑波大学）、MIT License
+- 目次PDF出力用フォント: IPAexゴシック（IPA、IPAフォントライセンスv1.0）— `public/fonts/`
 - 帰属表示を必ず維持すること
 
 ## 上流リポジトリ

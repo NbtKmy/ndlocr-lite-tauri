@@ -17,6 +17,7 @@ pub enum BookStatus {
     ReviewPending,
     Approved,
     Exported,
+    ExportedNoEmbed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -283,18 +284,18 @@ async fn ollama_embed(
     ollama_url: Option<String>,
 ) -> Result<Vec<f32>, String> {
     let url = format!(
-        "{}/api/embeddings",
+        "{}/api/embed",
         ollama_url.as_deref().unwrap_or("http://localhost:11434")
     );
 
     #[derive(Serialize)]
-    struct Req { model: String, prompt: String }
+    struct Req { model: String, input: String }
     #[derive(Deserialize)]
-    struct Resp { embedding: Vec<f32> }
+    struct Resp { embeddings: Vec<Vec<f32>> }
 
     let resp = reqwest::Client::new()
         .post(&url)
-        .json(&Req { model, prompt: text })
+        .json(&Req { model, input: text })
         .send()
         .await
         .map_err(|e| format!("Embed request failed: {e}"))?;
@@ -303,7 +304,12 @@ async fn ollama_embed(
         return Err(format!("Embed error: {}", resp.status()));
     }
 
-    Ok(resp.json::<Resp>().await.map_err(|e| format!("Embed parse: {e}"))?.embedding)
+    resp.json::<Resp>().await
+        .map_err(|e| format!("Embed parse: {e}"))?
+        .embeddings
+        .into_iter()
+        .next()
+        .ok_or_else(|| "Embed error: empty embeddings array".to_string())
 }
 
 // ─── HTTP ────────────────────────────────────────────────────────────────────
@@ -397,6 +403,58 @@ async fn append_output_record(
     fs::write(&path, content).map_err(|e| e.to_string())
 }
 
+/// 指定 book_id のレコードを削除してから新レコードを末尾に書き込む（上書きupsert）
+#[tauri::command]
+async fn upsert_output_records(
+    app: AppHandle,
+    file: String,
+    book_id: String,
+    records: Vec<serde_json::Value>,
+    output_dir: Option<String>,
+) -> Result<(), String> {
+    let dir = match output_dir.as_deref() {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => data_dir(&app).join("output"),
+    };
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(&file);
+
+    let existing = if path.exists() {
+        fs::read_to_string(&path).map_err(|e| e.to_string())?
+    } else {
+        String::new()
+    };
+
+    let mut lines: Vec<String> = existing
+        .lines()
+        .filter(|line| {
+            if line.trim().is_empty() {
+                return false;
+            }
+            serde_json::from_str::<serde_json::Value>(line)
+                .ok()
+                .and_then(|v| {
+                    v.get("book_id")
+                        .and_then(|id| id.as_str())
+                        .map(|id| id != book_id)
+                })
+                .unwrap_or(true)
+        })
+        .map(|s| s.to_string())
+        .collect();
+
+    for record in &records {
+        lines.push(serde_json::to_string(record).map_err(|e| e.to_string())?);
+    }
+
+    let content = if lines.is_empty() {
+        String::new()
+    } else {
+        lines.join("\n") + "\n"
+    };
+    fs::write(&path, content).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 async fn read_output_file(app: AppHandle, file: String, output_dir: Option<String>) -> Result<String, String> {
     let dir = match output_dir.as_deref() {
@@ -405,6 +463,28 @@ async fn read_output_file(app: AppHandle, file: String, output_dir: Option<Strin
     };
     let path = dir.join(&file);
     fs::read_to_string(&path).map_err(|e| e.to_string())
+}
+
+/// 目次PDFを output_dir/toc_pdf/{book_id}.pdf に書き込む（1書籍1ファイル）
+#[tauri::command]
+async fn write_output_pdf(
+    app: AppHandle,
+    book_id: String,
+    bytes: Vec<u8>,
+    output_dir: Option<String>,
+) -> Result<String, String> {
+    if book_id.contains('/') || book_id.contains('\\') || book_id.contains("..") {
+        return Err("Invalid book_id".to_string());
+    }
+    let dir = match output_dir.as_deref() {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => data_dir(&app).join("output"),
+    };
+    let pdf_dir = dir.join("toc_pdf");
+    fs::create_dir_all(&pdf_dir).map_err(|e| e.to_string())?;
+    let path = pdf_dir.join(format!("{book_id}.pdf"));
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
 }
 
 // ─── エントリポイント ────────────────────────────────────────────────────────
@@ -446,7 +526,9 @@ pub fn run() {
             ollama_chat,
             ollama_embed,
             append_output_record,
+            upsert_output_records,
             read_output_file,
+            write_output_pdf,
             read_model_file,
         ])
         .run(tauri::generate_context!())

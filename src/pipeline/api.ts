@@ -50,8 +50,14 @@ export const pipeline = {
   appendOutputRecord: (file: string, record: unknown, outputDir?: string) =>
     invoke<void>('append_output_record', { file, record, outputDir: outputDir ?? null }),
 
+  upsertOutputRecords: (file: string, bookId: string, records: unknown[], outputDir?: string) =>
+    invoke<void>('upsert_output_records', { file, bookId, records, outputDir: outputDir ?? null }),
+
   readOutputFile: (file: string, outputDir?: string) =>
     invoke<string>('read_output_file', { file, outputDir: outputDir ?? null }),
+
+  writeOutputPdf: (bookId: string, bytes: Uint8Array, outputDir?: string) =>
+    invoke<string>('write_output_pdf', { bookId, bytes: Array.from(bytes), outputDir: outputDir ?? null }),
 
   httpGet: (url: string) =>
     invoke<string>('http_get', { url }),

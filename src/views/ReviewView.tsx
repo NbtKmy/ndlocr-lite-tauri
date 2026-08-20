@@ -6,7 +6,8 @@ import { embedEntries, embedBook } from '../ai/embeddings'
 import { loadOllamaConfig } from '../utils/ollamaConfig'
 import { loadOutputConfig, saveOutputConfig } from '../utils/outputConfig'
 import { pickFolder } from '../utils/folderPicker'
-import { writeBookRecord, writeEntryRecords } from '../output/writer'
+import { writeBookRecord, writeEntryRecords, upsertBookRecord, upsertEntryRecords } from '../output/writer'
+import { generateTocPdf } from '../output/tocPdf'
 import { EntryEditor } from './EntryEditor'
 import { ImageViewer } from '../components/viewer/ImageViewer'
 import { pdfToProcessedImages } from '../utils/pdfLoader'
@@ -18,7 +19,7 @@ interface ReviewViewProps {
   onBack: () => void
 }
 
-type Phase = 'loading' | 'ocr_missing' | 'structuring' | 'review' | 'approving' | 'done' | 'error'
+type Phase = 'loading' | 'ocr_missing' | 'structuring' | 'review' | 'approving' | 'retrying_embed' | 'done' | 'error'
 
 /** SRUメタデータが無い本（手動追加）用のフォールバック */
 function makeFallbackMeta(bookId: string): SruMetadata {
@@ -58,6 +59,8 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
   const [showRawResponse, setShowRawResponse] = useState(false)
   const [outputConfirm, setOutputConfirm] = useState<{ defaultDir: string } | null>(null)
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved')
+  const [embedFailed, setEmbedFailed] = useState(false)
+  const [pdfMessage, setPdfMessage] = useState<string | null>(null)
 
   useEffect(() => {
     async function load() {
@@ -90,6 +93,25 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
             setImageLoading(false)
           }
         })
+
+        // exported_no_embed の書籍は review.json からエントリを読み込んで再埋め込み画面へ
+        const allBooks = await pipeline.listBooks().catch(() => [] as typeof pipeline extends { listBooks: () => Promise<infer T> } ? T : never[])
+        const manifest = (allBooks as Awaited<ReturnType<typeof pipeline.listBooks>>).find(b => b.book_id === bookId)
+        if (manifest?.status === 'exported_no_embed') {
+          try {
+            const reviewed = await pipeline.readStage<ReviewedEntry[]>(bookId, 'review')
+            setEntries(reviewed)
+          } catch {
+            // review.json がなければ draft.json にフォールバック
+            try {
+              const draft = await pipeline.readStage<TocEntry[]>(bookId, 'draft')
+              setEntries(draft.map(e => ({ ...e, reviewed: true, edited: false })))
+            } catch { /* ignore */ }
+          }
+          setEmbedFailed(true)
+          setPhase('done')
+          return
+        }
 
         try {
           const draft = await pipeline.readStage<TocEntry[]>(bookId, 'draft')
@@ -155,6 +177,20 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     }
   }, [bookId, ocrPages, pageImages])
 
+  /** 目次PDF出力（承認前でも実行可能、entries.jsonl等とは独立） */
+  const handleExportPdf = useCallback(async () => {
+    setPdfMessage('PDF生成中…')
+    try {
+      const meta = sruMeta ?? makeFallbackMeta(bookId)
+      const config = loadOutputConfig()
+      const bytes = await generateTocPdf(meta, entries)
+      const path = await pipeline.writeOutputPdf(bookId, bytes, config.outputDir || undefined)
+      setPdfMessage(`PDF出力しました: ${path}`)
+    } catch (e) {
+      setPdfMessage(`PDF出力エラー: ${e}`)
+    }
+  }, [bookId, entries, sruMeta])
+
   /** 承認ボタン → まず出力先確認ダイアログを表示 */
   const handleApproveClick = useCallback(async () => {
     const config = loadOutputConfig()
@@ -180,23 +216,31 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
       const meta = sruMeta ?? makeFallbackMeta(bookId)
       const bookTitle = meta.titleOriginal ?? meta.titleRomanized
 
-      // チャンクレベル埋め込み（親見出しコンテキスト付き）
-      const embedResults = await embedEntries(markedEntries, bookTitle, {
-        model: ollamaConfig.model,
-        ollamaUrl: ollamaConfig.baseUrl,
-        onProgress: (done, total) => setProgress(`エントリ埋め込み ${done}/${total}件…`),
-      })
+      // チャンクレベル埋め込み（失敗時は空でフォールバック）
+      let embedResults: Awaited<ReturnType<typeof embedEntries>> = []
+      let embedError = false
+      try {
+        embedResults = await embedEntries(markedEntries, bookTitle, {
+          model: ollamaConfig.embedModel,
+          ollamaUrl: ollamaConfig.baseUrl,
+          onProgress: (done, total) => setProgress(`エントリ埋め込み ${done}/${total}件…`),
+        })
+      } catch (e) {
+        console.warn('[ReviewView] エントリ埋め込み失敗 (スキップ):', e)
+        embedError = true
+      }
 
       // 書籍レベル埋め込み
       setProgress('書籍レベル埋め込みを計算中…')
       let bookEmbedding: number[] | undefined
       try {
         bookEmbedding = await embedBook(meta, {
-          model: ollamaConfig.model,
+          model: ollamaConfig.embedModel,
           ollamaUrl: ollamaConfig.baseUrl,
         })
       } catch (e) {
         console.warn('[ReviewView] 書籍埋め込み失敗 (スキップ):', e)
+        embedError = true
       }
 
       setProgress('JSONL 出力中…')
@@ -204,10 +248,50 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
       await pipeline.writeStage(bookId, 'review', markedEntries)
       await writeBookRecord(meta, ocrPages.length, ollamaConfig.model, now, bookEmbedding)
       await writeEntryRecords(bookId, markedEntries, embedResults)
-      await pipeline.setStatus(bookId, 'exported')
+      const newStatus = embedError ? 'exported_no_embed' : 'exported'
+      await pipeline.setStatus(bookId, newStatus)
+      setEmbedFailed(embedError)
       setPhase('done')
     } catch (e) {
       setError(`承認エラー: ${e}`)
+      setPhase('error')
+    }
+  }, [bookId, entries, ocrPages, sruMeta])
+
+  const retryEmbed = useCallback(async () => {
+    setPhase('retrying_embed')
+    setProgress('埋め込みを再計算中…')
+    try {
+      const ollamaConfig = loadOllamaConfig()
+      const meta = sruMeta ?? makeFallbackMeta(bookId)
+      const bookTitle = meta.titleOriginal ?? meta.titleRomanized
+
+      const embedResults = await embedEntries(entries, bookTitle, {
+        model: ollamaConfig.embedModel,
+        ollamaUrl: ollamaConfig.baseUrl,
+        onProgress: (done, total) => setProgress(`エントリ埋め込み ${done}/${total}件…`),
+      })
+
+      setProgress('書籍レベル埋め込みを計算中…')
+      let bookEmbedding: number[] | undefined
+      try {
+        bookEmbedding = await embedBook(meta, {
+          model: ollamaConfig.embedModel,
+          ollamaUrl: ollamaConfig.baseUrl,
+        })
+      } catch (e) {
+        console.warn('[ReviewView] 書籍埋め込み失敗 (スキップ):', e)
+      }
+
+      setProgress('JSONL 上書き中…')
+      const now = String(Math.floor(Date.now() / 1000))
+      await upsertBookRecord(meta, ocrPages.length, ollamaConfig.model, now, bookEmbedding)
+      await upsertEntryRecords(bookId, entries, embedResults)
+      await pipeline.setStatus(bookId, 'exported')
+      setEmbedFailed(false)
+      setPhase('done')
+    } catch (e) {
+      setError(`再埋め込みエラー: ${e}`)
       setPhase('error')
     }
   }, [bookId, entries, ocrPages, sruMeta])
@@ -218,7 +302,28 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     return <div className="review-loading">読み込み中…</div>
   }
 
+  if (phase === 'retrying_embed') {
+    return (
+      <div className="review-loading">
+        <p>{progress}</p>
+      </div>
+    )
+  }
+
   if (phase === 'done') {
+    if (embedFailed) {
+      return (
+        <div className="review-done">
+          <h2>⚠️ 埋め込みなしで出力済み</h2>
+          <p>目次データは <code>entries.jsonl</code> に出力されました。</p>
+          <p>Ollama の埋め込みモデル（bge-m3）を確認してから再試行できます。</p>
+          <div className="review-done-actions">
+            <button className="btn-secondary" onClick={onBack}>← キューに戻る</button>
+            <button className="btn-primary" onClick={retryEmbed}>再埋め込みを実行</button>
+          </div>
+        </div>
+      )
+    }
     return (
       <div className="review-done">
         <h2>✅ 承認完了</h2>
@@ -294,6 +399,9 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
               <button className="btn-secondary" onClick={runStructuring}>
                 再構造化
               </button>
+              <button className="btn-secondary" onClick={handleExportPdf}>
+                PDF出力
+              </button>
               <button className="btn-approve" onClick={handleApproveClick}>
                 承認 → 出力
               </button>
@@ -303,6 +411,9 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
             <span className={`save-status save-status-${saveStatus}`}>
               {saveStatus === 'saving' ? '保存中…' : saveStatus === 'unsaved' ? '未保存' : '✓ 保存済み'}
             </span>
+          )}
+          {phase === 'review' && pdfMessage && (
+            <span className="progress-text">{pdfMessage}</span>
           )}
           {(phase === 'approving' || phase === 'structuring') && (
             <span className="progress-text">{progress}</span>
