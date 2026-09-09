@@ -508,10 +508,8 @@ async fn append_output_text(
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let path = dir.join(&file);
 
-    let mut line = text;
-    if !line.ends_with('\n') {
-        line.push('\n');
-    }
+    // 末尾の改行を1つに正規化（呼び出し側が改行付きで渡しても空行を作らない）
+    let line = format!("{}\n", text.trim_end_matches('\n'));
 
     let mut f = OpenOptions::new()
         .append(true)
