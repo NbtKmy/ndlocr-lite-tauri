@@ -8,6 +8,7 @@ import { loadOutputConfig, saveOutputConfig } from '../utils/outputConfig'
 import { pickFolder } from '../utils/folderPicker'
 import { writeBookRecord, writeEntryRecords, upsertBookRecord, upsertEntryRecords } from '../output/writer'
 import { generateTocPdf } from '../output/tocPdf'
+import { exportCiniiBook } from '../output/ciniiExport'
 import { EntryEditor } from './EntryEditor'
 import { ImageViewer } from '../components/viewer/ImageViewer'
 import { pdfToProcessedImages } from '../utils/pdfLoader'
@@ -61,6 +62,8 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved')
   const [embedFailed, setEmbedFailed] = useState(false)
   const [pdfMessage, setPdfMessage] = useState<string | null>(null)
+  const [ciniiMessage, setCiniiMessage] = useState<string | null>(null)
+  const [ciniiBusy, setCiniiBusy] = useState(false)
 
   useEffect(() => {
     async function load() {
@@ -191,6 +194,40 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     }
   }, [bookId, entries, sruMeta])
 
+  /**
+   * CiNii JSON出力（承認時の確定データ review.json を対象、承認フローとは独立）
+   * スキップは業務上の正常な結果なのでエラー表示にはしない
+   */
+  const handleExportCinii = useCallback(async () => {
+    setCiniiBusy(true)
+    setCiniiMessage('CiNii照会中…')
+    try {
+      const meta = sruMeta ?? makeFallbackMeta(bookId)
+      const r = await exportCiniiBook(bookId, meta)
+      if (r.status === 'ok') {
+        const multi = (r.hits ?? 0) > 1 ? `（${r.hits}件ヒット→先頭採用）` : ''
+        setCiniiMessage(
+          `CiNii JSON出力しました: ${r.outputDir}/cinii_books.jsonl` +
+            `（承認時の確定データ ${r.entryCount}件 / ncid=${r.ncid}）${multi}`
+        )
+      } else if (r.reason === 'not_reviewed') {
+        setCiniiMessage('未承認です。「承認 → 出力」を実行してから押してください')
+      } else if (r.reason === 'no_isbn') {
+        setCiniiMessage(`ISBNがないためCiNii照会できません（ログ記録: ${r.logPath}）`)
+      } else if (r.reason === 'no_hit') {
+        setCiniiMessage(
+          `CiNii IDが見つかりませんでした。JSONには出力していません（ログ記録: ${r.logPath}）`
+        )
+      } else {
+        setCiniiMessage(`CiNii API エラー: ${r.detail}（ログ記録: ${r.logPath}）`)
+      }
+    } catch (e) {
+      setCiniiMessage(`CiNii出力エラー: ${e}`)
+    } finally {
+      setCiniiBusy(false)
+    }
+  }, [bookId, sruMeta])
+
   /** 承認ボタン → まず出力先確認ダイアログを表示 */
   const handleApproveClick = useCallback(async () => {
     const config = loadOutputConfig()
@@ -298,6 +335,13 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
 
   const currentPage = ocrPages[currentPageIdx]
 
+  // review フェーズのヘッダーと done 画面 2 種の 3 箇所から参照するため変数化する
+  const ciniiButton = (
+    <button className="btn-secondary" onClick={handleExportCinii} disabled={ciniiBusy}>
+      {ciniiBusy ? 'CiNii照会中…' : 'CiNii JSON出力'}
+    </button>
+  )
+
   if (phase === 'loading') {
     return <div className="review-loading">読み込み中…</div>
   }
@@ -320,7 +364,9 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
           <div className="review-done-actions">
             <button className="btn-secondary" onClick={onBack}>← キューに戻る</button>
             <button className="btn-primary" onClick={retryEmbed}>再埋め込みを実行</button>
+            {ciniiButton}
           </div>
+          {ciniiMessage && <p className="progress-text">{ciniiMessage}</p>}
         </div>
       )
     }
@@ -328,7 +374,11 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
       <div className="review-done">
         <h2>✅ 承認完了</h2>
         <p><code>data/output/entries.jsonl</code> に出力しました。</p>
-        <button className="btn-primary" onClick={onBack}>← キューに戻る</button>
+        <div className="review-done-actions">
+          <button className="btn-primary" onClick={onBack}>← キューに戻る</button>
+          {ciniiButton}
+        </div>
+        {ciniiMessage && <p className="progress-text">{ciniiMessage}</p>}
       </div>
     )
   }
@@ -402,6 +452,7 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
               <button className="btn-secondary" onClick={handleExportPdf}>
                 PDF出力
               </button>
+              {ciniiButton}
               <button className="btn-approve" onClick={handleApproveClick}>
                 承認 → 出力
               </button>
@@ -414,6 +465,9 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
           )}
           {phase === 'review' && pdfMessage && (
             <span className="progress-text">{pdfMessage}</span>
+          )}
+          {phase === 'review' && ciniiMessage && (
+            <span className="progress-text">{ciniiMessage}</span>
           )}
           {(phase === 'approving' || phase === 'structuring') && (
             <span className="progress-text">{progress}</span>
