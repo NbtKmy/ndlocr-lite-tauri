@@ -347,6 +347,17 @@ describe('exportCiniiBook', () => {
     expect(r.logPath).toBe(LOG_PATH)
   })
 
+  it('NCID解析不能（hits>0）でも no_hit で JSONL を書かず、ログに hits を残す', async () => {
+    readStage.mockResolvedValue([entry(1)])
+    lookup.mockResolvedValue({ ncid: null, hits: 1, queriedIsbns: ['9784167137113'] })
+
+    const r = await exportCiniiBook('991234567890', META, FIXED)
+
+    expect(r.reason).toBe('no_hit')
+    expect(upsert).not.toHaveBeenCalled()
+    expect(appendText.mock.calls[0][1]).toContain('hits=1')
+  })
+
   it('通信失敗なら api_error で detail を残す', async () => {
     readStage.mockResolvedValue([entry(1)])
     lookup.mockResolvedValue({

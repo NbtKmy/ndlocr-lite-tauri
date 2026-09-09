@@ -341,7 +341,13 @@ async fn http_get(url: String, timeout_secs: Option<u64>) -> Result<String, Stri
     if !resp.status().is_success() {
         return Err(format!("http_get error: {}", resp.status()));
     }
-    resp.text().await.map_err(|e| format!("http_get read failed: {e}"))
+    resp.text().await.map_err(|e| {
+        if e.is_timeout() {
+            format!("http_get timeout ({secs}s): {url}")
+        } else {
+            format!("http_get read failed: {e}")
+        }
+    })
 }
 
 /// URLからPDFをダウンロードしてinboxディレクトリに保存、保存先フルパスを返す

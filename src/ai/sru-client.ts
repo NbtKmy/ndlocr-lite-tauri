@@ -253,7 +253,10 @@ export async function searchMonthlyAcquisitions(
 
   let xmlText: string
   try {
-    xmlText = await pipeline.httpGet(url)
+    // maximumRecords=100件分のMARC-XML（AVA所蔵・880リンク含む）はメガバイト単位になり得るため、
+    // 単発ISBN照会（resolveIsbn）の30秒デフォルトより長めに切る。reqwestのtimeoutは総時間の
+    // デッドライン（body読み取りも含む）なので、転送が遅いだけでもここで打ち切られてしまう。
+    xmlText = await pipeline.httpGet(url, 60)
   } catch (e) {
     throw new Error(`SRU月次検索フェッチ失敗: ${e}`)
   }
