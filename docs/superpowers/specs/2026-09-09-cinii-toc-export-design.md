@@ -379,30 +379,60 @@ Vitest。既存の `src/__tests__/` の規約（`*.test.ts`、`vi.mock` によ�
 
 ### `ciniiClient.test.ts`
 
-`src/pipeline/api.ts` を `vi.mock` し、`pipeline.httpGet` にフィクスチャ文字列を返させる。
+`src/pipeline/api.ts` を `vi.mock` し、`pipeline.httpGet` に `src/__tests__/fixtures/ciniiResponses.ts` の `CINII_HIT1` / `CINII_HIT0` / `CINII_HIT3`（JSON文字列を `export` した定数。`tsconfig.app.json` に `resolveJsonModule` がないため `.json` ではなく `.ts`、§5）を返させる。
 
-- ISBN 正規化: ハイフン付き、`(pbk)` 等の付記付き、桁数不正（除外されること）、ISBN-10 の末尾 `X`
-- 1 件ヒット: `cinii-hit1.json` から `BB08395220` を抽出する
-- 0 件: `cinii-hit0.json`（`items` キーなし）で `{ ncid: null, hits: 0 }` を返し、例外を投げない
-- 複数ヒット: `cinii-hit3.json` で先頭の NCID を採用し `hits === 3` を返す
-- 複数 ISBN のフォールバック: 1 番目が 0 件、2 番目がヒット → 2 番目を採用し `queriedIsbn` が 2 番目になる
-- 有効候補なし: `{ ncid: null, hits: 0, queriedIsbn: null }` を返し `httpGet` を 1 度も呼ばない
-- 通信失敗: `httpGet` が reject → `error` が設定される
-- 通信成功 0 件と通信失敗が混在: `no_hit` 相当（`error` が設定されない）ことを確認
-- NCID 形式が不正な値: 採用せず次の候補に進む
+`parseCiniiResponse`:
+
+- 1 件ヒット（`CINII_HIT1`）から NCID `BB08395220` を抽出する
+- 0 件（`CINII_HIT0`、`items` キーなし）でも例外を投げず `{ hits: 0, ncid: null }` を返す
+- 複数ヒット（`CINII_HIT3`）で `items[0]` の NCID を採用し `hits` を保持する
+- NCID の形式が不正な値は採用せず `ncid: null` を返す
+
+`lookupCiniiNcid`（単一 OR リクエスト、§4.3）:
+
+- 候補が 1 件ならクエリ文字列に `OR` を含まない
+- 候補が複数なら `%20OR%20` で連結した 1 本の URL で照会し、`httpGet` は 1 回だけ呼ばれる
+- `httpGet` の第 2 引数（タイムアウト秒）に `15` を渡す
+- ISBN-10 の末尾 `X`（大文字・小文字とも）を有効な候補として扱い、大文字化して照会する
+- 桁数が不正な候補、または候補が空の場合は `httpGet` を呼ばず `{ ncid: null, hits: 0, queriedIsbns: [] }` を返す
+- 1 件ヒットなら NCID を採用し、`queriedIsbns` には照会した全候補が入る（採用した1件だけに絞られない）
+- 0 件（`CINII_HIT0`）なら `ncid: null, hits: 0` を返し `error` は設定しない
+- 複数ヒット（`CINII_HIT3`）なら `items[0]` の NCID を採用し `hits` を保持する
+- NCID が解析不能でも `hits` は保持する（CiNii は持っているが ID が読めない場合と、0 件の場合を区別できることの確認。§8 の `no_hit` 条件に対応）
+- 通信失敗、または本文が不正な JSON の場合は `error` を設定する
+- 正規化後に重複する候補は 1 度だけクエリに含まれる（`httpGet` は 1 回だけ呼ばれる）
 
 ### `ciniiExport.test.ts`
 
 `src/pipeline/api.ts` と `src/ai/cinii-client.ts` を `vi.mock` する。`now` に固定 `Date` を注入する。
 
-- レコード組立: `toc` が 5 項目のみになり、`raw_ocr_text` / `confidence` / `embedding` 等が含まれないこと
-- `exported_at` とログ行のタイムスタンプが同一値であること
-- `toIsoWithOffset`: オフセット付き ISO8601 になること（`Z` を含まないこと）
-- `upsertOutputRecords` が `'cinii_books.jsonl'`、`bookId`、1 要素配列で呼ばれること
-- `not_reviewed`: `readStage` が reject → `upsertOutputRecords` を呼ばず、ログのみ書くこと
-- `not_reviewed`: `readStage` が空配列を返す場合も同様であること
-- ログ書式: `OK`（`hits === 1`）、`OK`（`hits > 1` で `note=` 付き）、`SKIP` 各 reason の 1 行文字列が仕様どおりであること
-- `detail` にスペースを含む場合、行末に配置されること
+`toIsoWithOffset`:
+
+- オフセット付き ISO8601 になり `Z` を含まない
+- ローカルの年月日時分秒をそのまま使う
+
+`formatLogLine`:
+
+- OK 行（1 件ヒット）
+- OK 行（複数 ISBN を照会した場合は `isbn=` がカンマ区切りになる）
+- OK 行（複数ヒットは `note=複数N件ヒット→先頭採用` を付ける）
+- SKIP 行（`no_hit` / `no_isbn` / `not_reviewed` それぞれの書式）
+- SKIP 行（`detail` はスペースを含みうるので必ず行末に置かれる）
+- SKIP 行（`detail` に改行が含まれても 1 行に畳む）
+
+`exportCiniiBook`:
+
+- レコード組立: `toc` が 5 項目のみになり、`raw_ocr_text` / `confidence` / `embedding` 等を含まない
+- 書誌フィールド（`book_id` / `cinii_ncid` / `title` / `pub_year` / `isbn`）を SRU メタデータから組み立てる
+- `titleOriginal` が `null` なら `titleRomanized` を使う
+- `exported_at` とログ行のタイムスタンプが同一値になる
+- `upsertOutputRecords` が `'cinii_books.jsonl'`、`bookId`、1 要素配列、`outputDir` で呼ばれる
+- 成功時は `jsonlPath` をログパスから導出する（Windows 形式の `\` 区切りログパスでも正しく組み立てる）
+- `not_reviewed`: `readStage` が reject、または空配列を返す場合、`upsertOutputRecords` を呼ばずログのみ書く
+- `no_isbn`: 有効な ISBN がなければ JSONL を書かない
+- `no_hit`: ヒット 0 件（または NCID 解析不能）なら JSONL を書かない
+- `api_error`: 通信失敗なら `detail` を残し JSONL を書かない
+- 複数ヒット時は `hits` を保持し、ログに `note=複数N件ヒット→先頭採用` を残す
 
 ### 手動確認
 
