@@ -62,8 +62,8 @@ export const pipeline = {
   appendOutputText: (file: string, text: string, outputDir?: string) =>
     invoke<string>('append_output_text', { file, text, outputDir: outputDir ?? null }),
 
-  httpGet: (url: string) =>
-    invoke<string>('http_get', { url }),
+  httpGet: (url: string, timeoutSecs?: number) =>
+    invoke<string>('http_get', { url, timeoutSecs: timeoutSecs ?? null }),
 
   downloadPdf: (url: string, filename: string) =>
     invoke<string>('download_pdf', { url, filename }),

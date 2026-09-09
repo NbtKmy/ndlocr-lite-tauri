@@ -3,6 +3,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 use tauri::{AppHandle, Manager};
 use tauri::ipc::Response;
 
@@ -318,12 +319,25 @@ async fn ollama_embed(
 
 /// 任意のURLをGETしてレスポンスボディをUTF-8文字列で返す（SRU等のCORS回避用）
 #[tauri::command]
-async fn http_get(url: String) -> Result<String, String> {
-    let resp = reqwest::Client::new()
+async fn http_get(url: String, timeout_secs: Option<u64>) -> Result<String, String> {
+    // タイムアウト未指定時は30秒をデフォルトとする（reqwest::Client::new()にはデフォルトタイムアウトがなく、
+    // ハングした接続がコマンドを無期限に停止させてしまうため）
+    let secs = timeout_secs.unwrap_or(30);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(secs))
+        .build()
+        .map_err(|e| format!("http_get client build failed: {e}"))?;
+    let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("http_get failed: {e}"))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!("http_get timeout ({secs}s): {url}")
+            } else {
+                format!("http_get failed: {e}")
+            }
+        })?;
     if !resp.status().is_success() {
         return Err(format!("http_get error: {}", resp.status()));
     }
