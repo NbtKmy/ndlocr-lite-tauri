@@ -320,7 +320,7 @@ ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` �
 - `ciniiBusy` が真の間は `disabled` にし、ラベルを `CiNii照会中…` に変える
 - 結果は `ciniiMessage` state に入れ、既存の `.progress-text` クラスで表示する。`pdfMessage` とは別 state にする（同時に押した際に互いを潰さないため）
 
-表示条件は `phase === 'review'` と `phase === 'done'` の両方だが、**両者は描画箇所が異なる**。`phase === 'done'` は `src/views/ReviewView.tsx:313-334` で早期リターンし `.review-done` 画面を返すため、ヘッダーを描画しない。したがって:
+表示条件は `phase === 'review'` と `phase === 'done'` の両方だが、**両者は描画箇所が異なる**。`src/views/ReviewView.tsx` の `if (phase === 'done')` ブロックは早期リターンで `.review-done` 画面を返すため、ヘッダーを描画しない。したがって:
 
 - `phase === 'review'` → ボタンは `.review-header-actions` 内、`PDF出力` ボタンの隣。メッセージは `pdfMessage` / `progress` と同じ `.progress-text` の `<span>` として、ヘッダー本体とは別の `.review-message-row`（`.review-header` の直後に続く独立した行）に表示する（後述）
 - `phase === 'done'` → `.review-done` 画面 2 種（`embedFailed` 時の「⚠️ 埋め込みなしで出力済み」と通常の「✅ 承認完了」）それぞれの `.review-done-actions` 内。メッセージは `.progress-text` の `<p>` として表示。通常の承認完了画面は現在 `.review-done-actions` のラッパーを持たないため追加する
@@ -345,7 +345,7 @@ ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` �
 
 ### 承認後に編集した場合の扱い
 
-ReviewView は承認済み（status = `exported`）の書籍を開き直すと `draft.json` から読み込んで `phase = 'review'` に戻る（`src/views/ReviewView.tsx:116-120`）。このため、承認後に画面上でエントリを編集してから CiNii 出力を押すと、画面の内容と出力内容が食い違う。
+ReviewView は承認済み（status = `exported`）の書籍を開き直すと `draft.json` から読み込んで `phase = 'review'` に戻る（`src/views/ReviewView.tsx` の `load()` 内、`readStage(bookId, 'draft')` のフォールバック分岐）。このため、承認後に画面上でエントリを編集してから CiNii 出力を押すと、画面の内容と出力内容が食い違う。
 
 これは仕様として受け入れ、メッセージに「承認時の確定データ」と明示することで誤解を防ぐ。編集内容を反映したい場合は再度「承認 → 出力」を実行し、`review.json` を更新してから CiNii 出力を押す。
 
