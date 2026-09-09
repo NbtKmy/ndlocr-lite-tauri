@@ -8,11 +8,13 @@
 - 方針説明のメッセージ内でツールコール（Edit, Write等）を含めない（説明と実装を同時にやらない）
 - 大きな変更（UI変更、動作フロー変更）は特に慎重に事前確認する
 
-### 2. コミット時にバージョン番号を必ず3箇所更新すること
+### 2. コミット時にバージョン番号を必ず5箇所更新すること
 
 - `package.json` の `version` フィールド
 - `src/components/layout/Header.tsx` のUIバッジ
 - `src/utils/exportTEI.ts` のTEIメタデータ内 `version` 属性
+- `src-tauri/tauri.conf.json` の `version` フィールド（インストーラのファイル名・アプリのバージョン情報に反映される）
+- `src-tauri/Cargo.toml` の `[package] version`（変更後は `Cargo.lock` も追随するため一緒にコミットする）
 - バージョニング: 機能追加 → マイナー更新（例: v0.6.x → v0.7.0）、修正 → パッチ更新（例: v0.6.1 → v0.6.2）
 
 ### 3. プッシュはユーザーの明示的な指示があるまで絶対にしないこと
