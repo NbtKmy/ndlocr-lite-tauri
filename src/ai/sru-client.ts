@@ -38,7 +38,7 @@ export type SruResult =
   | { ok: false; reason: ResolveFailReason; detail?: string }
 
 /** ハイフン・空白除去、末尾の修飾語（括弧内等）を除く */
-function cleanIsbn(raw: string): string {
+export function cleanIsbn(raw: string): string {
   return raw.split(/[\s(]/)[0].replace(/-/g, '').trim()
 }
 
