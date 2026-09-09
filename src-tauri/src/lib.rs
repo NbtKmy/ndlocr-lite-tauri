@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri::ipc::Response;
@@ -487,6 +489,41 @@ async fn write_output_pdf(
     Ok(path.to_string_lossy().to_string())
 }
 
+/// プレーンテキストを1行追記し、書き込んだファイルの絶対パスを返す
+/// append_output_record は JSON 専用のため、ログ行の追記にはこちらを使う
+#[tauri::command]
+async fn append_output_text(
+    app: AppHandle,
+    file: String,
+    text: String,
+    output_dir: Option<String>,
+) -> Result<String, String> {
+    if file.contains('/') || file.contains('\\') || file.contains("..") {
+        return Err("Invalid file name".to_string());
+    }
+    let dir = match output_dir.as_deref() {
+        Some(d) if !d.is_empty() => PathBuf::from(d),
+        _ => data_dir(&app).join("output"),
+    };
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let path = dir.join(&file);
+
+    let mut line = text;
+    if !line.ends_with('\n') {
+        line.push('\n');
+    }
+
+    let mut f = OpenOptions::new()
+        .append(true)
+        .create(true)
+        .open(&path)
+        .map_err(|e| format!("append_output_text open: {e}"))?;
+    f.write_all(line.as_bytes())
+        .map_err(|e| format!("append_output_text write: {e}"))?;
+
+    Ok(path.to_string_lossy().to_string())
+}
+
 // ─── エントリポイント ────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -529,6 +566,7 @@ pub fn run() {
             upsert_output_records,
             read_output_file,
             write_output_pdf,
+            append_output_text,
             read_model_file,
         ])
         .run(tauri::generate_context!())

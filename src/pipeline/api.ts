@@ -59,6 +59,9 @@ export const pipeline = {
   writeOutputPdf: (bookId: string, bytes: Uint8Array, outputDir?: string) =>
     invoke<string>('write_output_pdf', { bookId, bytes: Array.from(bytes), outputDir: outputDir ?? null }),
 
+  appendOutputText: (file: string, text: string, outputDir?: string) =>
+    invoke<string>('append_output_text', { file, text, outputDir: outputDir ?? null }),
+
   httpGet: (url: string) =>
     invoke<string>('http_get', { url }),
 
