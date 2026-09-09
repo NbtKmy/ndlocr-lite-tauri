@@ -58,6 +58,15 @@ describe('lookupCiniiNcid', () => {
     expect(r.queriedIsbn).toBe('416713711X')
   })
 
+  it('ISBN-10 の末尾が小文字 x でも有効な候補として扱い、大文字化して照会する', async () => {
+    httpGet.mockResolvedValue(CINII_HIT1)
+    const r = await lookupCiniiNcid(['4-16-713711-x'])
+    expect(httpGet).toHaveBeenCalledWith(
+      'https://ci.nii.ac.jp/books/opensearch/search?isbn=416713711X&format=json'
+    )
+    expect(r.queriedIsbn).toBe('416713711X')
+  })
+
   it('桁数が不正な候補は照会しない', async () => {
     const r = await lookupCiniiNcid(['12345', '978416713711'])
     expect(httpGet).not.toHaveBeenCalled()
@@ -93,6 +102,14 @@ describe('lookupCiniiNcid', () => {
     expect(r.ncid).toBeNull()
     expect(r.error).toContain('503')
     expect(r.queriedIsbn).toBe('9784100000000')
+  })
+
+  it('本文が不正なJSONなら error を設定する', async () => {
+    httpGet.mockResolvedValue('not json at all')
+    const r = await lookupCiniiNcid(['9784167137113'])
+    expect(r.ncid).toBeNull()
+    expect(r.error).toContain('解析失敗')
+    expect(r.queriedIsbn).toBe('9784167137113')
   })
 
   it('0件と通信失敗が混在する場合は error を設定しない', async () => {

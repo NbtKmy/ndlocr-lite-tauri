@@ -207,7 +207,7 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
       if (r.status === 'ok') {
         const multi = (r.hits ?? 0) > 1 ? `（${r.hits}件ヒット→先頭採用）` : ''
         setCiniiMessage(
-          `CiNii JSON出力しました: ${r.outputDir}/cinii_books.jsonl` +
+          `CiNii JSON出力しました: ${r.jsonlPath}` +
             `（承認時の確定データ ${r.entryCount}件 / ncid=${r.ncid}）${multi}`
         )
       } else if (r.reason === 'not_reviewed') {

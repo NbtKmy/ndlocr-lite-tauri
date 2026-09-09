@@ -89,12 +89,18 @@ SRU（MARC-XML）由来の書誌・所蔵メタデータを含む。`OutputBook`
 {
   "book_id": "991234567890",          // MMS ID（upsertキー）
   "cinii_ncid": "BB08395220",         // CiNii Books ID
-  "title": "夕陽カ丘三号館",           // SRU: titleOriginal ?? titleRomanized
-  "pub_year": "2012",
+  "title": "string|null",             // SRU: titleOriginal ?? titleRomanized
+  "pub_year": "string|null",          // MARC由来の文字列（"c2026","[2026]"等あり得る）
   "isbn": ["9784167137113"],          // SRU由来の生値（ハイフン等を含む場合あり）
   "exported_at": "2026-09-09T20:52:26+09:00",  // cinii_export.log の行頭と同一値
   "toc": [
-    { "seq": 1, "level": 1, "heading_text": "第一章 転居", "page_number": 5, "contributor": null }
+    {
+      "seq": 1,
+      "level": 1,
+      "heading_text": "第一章 転居",
+      "page_number": 5,               // 開始ページ番号（不明時はnull）
+      "contributor": null             // 章の著者名（なければnull）
+    }
   ]
 }
 ```

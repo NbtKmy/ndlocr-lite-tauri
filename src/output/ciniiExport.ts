@@ -25,11 +25,18 @@ export interface CiniiExportResult {
   hits?: number
   queriedIsbn?: string
   entryCount?: number
-  /** 出力ディレクトリの絶対パス。logPath から導出 */
-  outputDir?: string
   /** ログファイルの絶対パス */
   logPath?: string
+  /** 書き込んだ cinii_books.jsonl の絶対パス。成功時のみ設定 */
+  jsonlPath?: string
   exportedAt: string
+}
+
+/** logPath をディレクトリと区切り文字に分解する（Windows は \ 区切り） */
+function splitLogPath(path: string): { dir: string; sep: string } {
+  const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+  if (cut < 0) return { dir: path, sep: '/' }
+  return { dir: path.slice(0, cut), sep: path[cut] }
 }
 
 function outputDir(): string | undefined {
@@ -158,6 +165,7 @@ export async function exportCiniiBook(
     entryCount: entries.length,
   }
   result.logPath = await pipeline.appendOutputText(LOG_FILE, formatLogLine(result, bookId), dir)
-  result.outputDir = result.logPath.slice(0, result.logPath.lastIndexOf('/'))
+  const { dir: logDir, sep } = splitLogPath(result.logPath)
+  result.jsonlPath = `${logDir}${sep}${CINII_FILE}`
   return result
 }

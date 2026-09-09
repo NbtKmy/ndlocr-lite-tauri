@@ -3266,6 +3266,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   line-height: 2;
 }
 .review-done h2 { color: #10b981; margin-bottom: 12px; }
+.review-done-actions { display: flex; gap: 8px; justify-content: center; }
 .review-error h2 { color: var(--color-danger); margin-bottom: 12px; }
 
 /* EntryEditor */

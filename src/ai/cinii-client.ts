@@ -65,10 +65,10 @@ export function parseCiniiResponse(json: string): ParsedChannel {
 
 /**
  * ISBN 候補を先頭から順に照会し、最初に NCID が取れたものを採用する
- * 通信エラーは打ち切らず次の候補を試す。1 度でも通信に成功していれば error は設定しない
+ * 通信エラーは打ち切らず次の候補を試す。1 度でも取得・解析に成功していれば error は設定しない
  */
 export async function lookupCiniiNcid(isbns: string[]): Promise<CiniiLookup> {
-  const candidates = [...new Set(isbns.map(cleanIsbn).filter(isValidIsbn))]
+  const candidates = [...new Set(isbns.map((s) => cleanIsbn(s).toUpperCase()).filter(isValidIsbn))]
   if (candidates.length === 0) {
     return { ncid: null, hits: 0, queriedIsbn: null }
   }

@@ -258,7 +258,7 @@ describe('exportCiniiBook', () => {
     expect(outputDir).toBe('/tmp/out')
   })
 
-  it('成功時は outputDir をログパスから導出する', async () => {
+  it('成功時は jsonlPath をログパスから導出する', async () => {
     readStage.mockResolvedValue([entry(1)])
     lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
 
@@ -267,7 +267,21 @@ describe('exportCiniiBook', () => {
     expect(r.status).toBe('ok')
     expect(r.entryCount).toBe(1)
     expect(r.logPath).toBe(LOG_PATH)
-    expect(r.outputDir).toBe('/tmp/out')
+    expect(r.jsonlPath).toBe('/tmp/out/cinii_books.jsonl')
+  })
+
+  it('Windows形式のログパスでも jsonlPath を正しく組み立てる', async () => {
+    readStage.mockResolvedValue([entry(1)])
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    appendText.mockResolvedValue(
+      'C:\\Users\\nobu\\AppData\\Roaming\\com.nobu.ndltococr\\data\\output\\cinii_export.log'
+    )
+
+    const r = await exportCiniiBook('991234567890', META, FIXED)
+
+    expect(r.jsonlPath).toBe(
+      'C:\\Users\\nobu\\AppData\\Roaming\\com.nobu.ndltococr\\data\\output\\cinii_books.jsonl'
+    )
   })
 
   it('review.json が読めなければ JSONL を書かず not_reviewed をログに残す', async () => {
@@ -280,6 +294,7 @@ describe('exportCiniiBook', () => {
     expect(upsert).not.toHaveBeenCalled()
     expect(lookup).not.toHaveBeenCalled()
     expect(appendText).toHaveBeenCalledTimes(1)
+    expect(r.logPath).toBe(LOG_PATH)
   })
 
   it('review.json が空配列でも not_reviewed になる', async () => {
@@ -289,6 +304,7 @@ describe('exportCiniiBook', () => {
 
     expect(r.reason).toBe('not_reviewed')
     expect(upsert).not.toHaveBeenCalled()
+    expect(r.logPath).toBe(LOG_PATH)
   })
 
   it('有効な ISBN がなければ no_isbn で JSONL を書かない', async () => {
@@ -310,6 +326,7 @@ describe('exportCiniiBook', () => {
     expect(r.reason).toBe('no_hit')
     expect(r.queriedIsbn).toBe('9784167137113')
     expect(upsert).not.toHaveBeenCalled()
+    expect(r.logPath).toBe(LOG_PATH)
   })
 
   it('通信失敗なら api_error で detail を残す', async () => {

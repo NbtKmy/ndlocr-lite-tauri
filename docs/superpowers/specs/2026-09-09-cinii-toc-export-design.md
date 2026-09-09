@@ -274,10 +274,10 @@ export interface CiniiExportResult {
   hits?: number
   queriedIsbn?: string
   entryCount?: number
-  /** 出力ディレクトリの絶対パス。append_output_text の戻り値から導出 */
-  outputDir?: string
   /** ログファイルの絶対パス */
   logPath?: string
+  /** 書き込んだ cinii_books.jsonl の絶対パス。成功時のみ設定 */
+  jsonlPath?: string
   exportedAt: string
 }
 
@@ -297,7 +297,7 @@ export function toIsoWithOffset(d: Date): string
 
 `Date.prototype.toISOString()` は UTC の `Z` 表記になりログの可読性が落ちるため使わない。
 
-UI メッセージ用のパスは、`append_output_text` が返したログの絶対パスから最後の `/` までを切り出して `outputDir` とし、`{outputDir}/cinii_books.jsonl` を組み立てる。
+UI メッセージ用のパスは、`append_output_text` が返したログの絶対パスをディレクトリと区切り文字（`/` または `\`）に分解し、`{dir}{sep}cinii_books.jsonl` として `jsonlPath` を組み立てる。区切り文字を固定で `/` とすると Windows のパス（`\` 区切り、`/` を含まない）で破綻するため、区切り文字も元のパスから採用する。
 
 呼び出し側（ReviewView）は既存の `PDF出力` と同じく `sruMeta ?? makeFallbackMeta(bookId)` を渡す。フォールバックメタデータは `isbn` が空配列になるため、その場合は `no_isbn` としてスキップされる。
 
@@ -319,7 +319,7 @@ ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` �
 
 | 結果 | 文言 |
 |---|---|
-| `ok`（`hits === 1`） | `CiNii JSON出力しました: {outputDir}/cinii_books.jsonl（承認時の確定データ {entryCount}件 / ncid={ncid}）` |
+| `ok`（`hits === 1`） | `CiNii JSON出力しました: {jsonlPath}（承認時の確定データ {entryCount}件 / ncid={ncid}）` |
 | `ok`（`hits > 1`） | 上記に加えて末尾に `（{hits}件ヒット→先頭採用）` |
 | `not_reviewed` | `未承認です。「承認 → 出力」を実行してから押してください` |
 | `no_isbn` | `ISBNがないためCiNii照会できません（ログ記録: {logPath}）` |
