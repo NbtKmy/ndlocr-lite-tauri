@@ -292,6 +292,12 @@ npm run mcp-server
 
 ## 変更履歴
 
+### v0.18.0（2026-09-10）
+
+- feat: InboxView の書籍一覧に CiNii JSON一括出力機能を追加。承認済み・出力済み（`approved` / `exported` / `exported_no_embed`）の書籍にチェックボックスが表示され、複数選択して「選択をCiNii JSON一括出力」ボタンで1つのJSON配列ファイル（`cinii_batch_YYYYMMDD-HHmmss.json`）にまとめて出力できる
+- feat: 一括出力は実行開始時に既存の `cinii_books.jsonl` を1回だけ読み、既知のNCIDがある書籍はCiNii照会をスキップして再利用する（新規に照会した書籍のみ `cinii_books.jsonl` にも upsert する）
+- feat: 単体出力（ReviewViewの「CiNii JSON出力」）と一括出力でレコード組立・出力先解決ロジックを共有（`src/output/ciniiExport.ts` からエクスポート）。単体出力の挙動・返り値・ログ形式は変更なし
+
 ### v0.17.1（2026-09-09）
 
 - fix: `http_get` にタイムアウトを設定可能にした。`reqwest::Client::new()` にはデフォルトのタイムアウトがなく、通信が固まるとCiNii出力ボタンが進捗表示のまま止まりアプリ再起動しか手段がなかった問題を修正。デフォルト30秒、呼び出し側から上書き可能

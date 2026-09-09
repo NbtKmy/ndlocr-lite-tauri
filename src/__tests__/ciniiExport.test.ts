@@ -130,6 +130,20 @@ describe('formatLogLine', () => {
     )
   })
 
+  it('OK 行（queriedIsbns/hitsが無い場合は isbn=/hits= を出さず、undefinedという文字列も出さない）', () => {
+    const line = formatLogLine(
+      {
+        status: 'ok',
+        exportedAt: '2026-09-09T20:52:26+09:00',
+        ncid: 'BB08395220',
+        entryCount: 42,
+      },
+      '991234567890'
+    )
+    expect(line).toBe('2026-09-09T20:52:26+09:00 991234567890 OK   ncid=BB08395220 entries=42')
+    expect(line).not.toContain('undefined')
+  })
+
   it('SKIP 行（no_hit）', () => {
     expect(
       formatLogLine(

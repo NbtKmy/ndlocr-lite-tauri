@@ -465,6 +465,199 @@ Vitest。既存の `src/__tests__/` の規約（`*.test.ts`、`vi.mock` によ�
 
 ## 12. 将来の拡張（今回はやらない）
 
-- InboxView からの一括出力。承認済み書籍を複数選択して順次照会・出力する。CiNii API への連続アクセスになるため、リクエスト間隔の制御が必要になる
+- ~~InboxView からの一括出力~~ → v0.18.0 で実装済み（第13章）
 - 複数ヒット時のユーザー選択ダイアログ。タイトル・出版年・出版社・`cinii:ownerCount` を並べて選ばせる
 - NCID を既存の `books.jsonl` にも付与する
+
+## 13. CiNii JSON一括出力（v0.18.0）
+
+- 作成日: 2026-09-10
+- 対象バージョン: v0.18.0
+
+### 13.1 目的
+
+第12章で挙げた将来拡張のうち「InboxViewからの一括出力」を実装する。単体出力（第6章〜第8章）は
+ReviewViewで書籍を1冊ずつ開いて出力する運用のため、承認済み書籍が多いと1冊ごとに画面遷移して
+ボタンを押す手間がかかる。InboxViewの書籍一覧から複数書籍を選択し、1回の操作でまとめて出力できる
+ようにする。
+
+### 13.2 単体出力との違い
+
+| 項目 | 単体出力（第3〜8章） | 一括出力（本章） |
+|---|---|---|
+| 起点画面 | ReviewView（1冊を開いた状態） | InboxView（書籍一覧、複数選択） |
+| 出力先 | `cinii_books.jsonl`（upsert） | `cinii_batch_YYYYMMDD-HHmmss.json`（新規ファイル、JSON配列） |
+| NCID解決 | 常にCiNii照会 | `cinii_books.jsonl` に既知NCIDがあれば再利用、なければ照会（ハイブリッド） |
+| `cinii_books.jsonl` への反映 | 常にupsert | 新規に照会した書籍のみupsert（再利用時はupsertしない） |
+| 対象書籍の判定 | 呼び出し元（ReviewView）が渡した1冊 | `status` が `approved` / `exported` / `exported_no_embed` の書籍のみ選択可能 |
+
+レコード組立（`review.json` + `sruMeta` → `CiniiBookRecord`）と出力先ディレクトリ解決
+（`loadOutputConfig().outputDir`）は `src/output/ciniiExport.ts` から関数として抽出し
+（`buildCiniiRecord` / `outputDir` / `CINII_FILE` / `LOG_FILE` / `formatLogLine` / `toIsoWithOffset`
+を export）、単体出力（`exportCiniiBook`）と一括出力（`exportCiniiBatch`）の両方で使う。
+単体出力側の外部挙動・返り値・ログ書式は変更していない（既存テストがそのまま通る）。
+
+### 13.3 NCID解決のハイブリッド方式
+
+一括出力の対象書籍が多いと、CiNii OpenSearch API への連続アクセスになる（第12章で懸念していた点）。
+これを緩和するため、実行開始時に `cinii_books.jsonl` を1回だけ読み、`book_id → cinii_ncid` の
+Mapを作る。各書籍の処理では:
+
+- Mapにヒット（既に単体出力または過去の一括出力でNCIDが判明している）→ CiNii照会をスキップしてそのNCIDを再利用。`cinii_books.jsonl` へのupsertも行わない（内容は変わらないため）
+- Mapにヒットしない → `lookupCiniiNcid(sruMeta.isbn)` で照会し、成功したら結果を `cinii_books.jsonl` にもupsertする（次回以降の一括出力・単体出力で再利用できるようにする）
+
+`cinii_books.jsonl` が存在しない場合（`readOutputFile` が reject）は空Mapとして扱い、全件照会にフォールバックする。壊れた行（JSONとして parse できない行）は無視して続行する。
+
+`toc` はNCIDを再利用した場合でも必ずその時点の `review.json` から組み立て直す。`cinii_books.jsonl`
+の既存行の `toc` を引き継ぐことはしない。承認後にレビューし直した書籍があっても、一括出力の結果には
+最新の目次が反映される。
+
+これによりリクエスト間隔の制御は不要になる場合が多い（既知の書籍は照会自体が発生しない）。全件が
+未照会の初回一括出力ではN件のリクエストが発生し得るが、これは単体出力をN回繰り返す場合と同じ負荷
+であり、既存の制約（CiNii照会1回15秒タイムアウト、§4.1）の範囲内で許容する。明示的なリクエスト間隔
+制御（レート制限）は今回も実装しない。
+
+### 13.4 出力ファイル
+
+`cinii_batch_YYYYMMDD-HHmmss.json`（ローカル時刻、生成時に1回だけ決定）に、成功した書籍の
+`CiniiBookRecord` を配列として書き込む。既存の `append_output_text` をそのまま使い、新しいファイル名
+のため実質新規作成になる。成功0件のときはファイルを作らない。
+
+ファイル名は秒まで含める。`append_output_text` の実装（Rust側 `OpenOptions::new().append(true)`）は
+追記のため、分単位のファイル名（`cinii_batch_YYYYMMDD-HHmm.json`）だと「一括出力 → 選択を変えて
+もう一度」のような同一分内の2回目の実行が既存ファイルの末尾に2つ目の配列を追記してしまい、
+`[...]\n[...]` という不正なJSONになる。この事象は実装レビューで発見され（2026-09-10）、秒まで含める
+ことで解消した。
+
+```jsonc
+[
+  { "book_id": "991234567890", "cinii_ncid": "BB08395220", "title": "...", "pub_year": "2012",
+    "isbn": ["9784167137113"], "exported_at": "2026-09-10T14:05:00+09:00", "toc": [ /* ... */ ] },
+  { "book_id": "991234567891", "cinii_ncid": "BA12345678", "...": "..." }
+]
+```
+
+### 13.5 ログ
+
+`cinii_export.log` に書籍ごとの行（`formatLogLine` を再利用、書式は第3.2章と同一）を追記し、
+実行の最後に集計行を1行追記する:
+
+```
+2026-09-10T14:05:00+09:00 991234567892 OK   ncid=BB09999999 isbn=9784167137113 entries=12 note=ncid再利用
+2026-09-10T14:05:00+09:00 BATCH file=cinii_batch_20260910-140500.json ok=3 skip=1
+```
+
+NCIDを再利用した書籍（CiNiiに照会していない）は `hits=` を持たず、末尾に `note=ncid再利用` が付く。
+`isbn=` はこの場合「照会したISBN」ではなく `SruMetadata.isbn` をそのまま使う（どの書籍のISBNかを
+ログに残すため、第2章の元の設計では `queriedIsbns` のみ想定していたが実装レビューで追加した）。
+`formatLogLine` の ok 分岐は元は `isbn=${r.queriedIsbns?.join(',')}` / `hits=${r.hits}` を
+無条件に push していたため、再利用時（両方 `undefined`）に `isbn=undefined hits=undefined` という
+文字列がログに出力される不具合があった（実装レビューで発見、2026-09-10）。SKIP分岐と同様に
+`r.queriedIsbns?.length` / `r.hits !== undefined` の条件を付けて修正した。単体出力
+（`exportCiniiBook`）は ok 時に常に両方の値を持つため、この修正で単体出力側の出力は変わらない
+（既存テストがそのまま通ることを確認済み）。
+
+実装上は、書籍ごとの行を配列に溜めてから改行結合し、`appendOutputText` を1回だけ呼ぶ
+（`append_output_text` は内部の改行を保持するため、複数行を1回の呼び出しで追記できる）。これにより
+ログ書き込み失敗が単一の `logWriteError` に集約され、単体出力（`exportCiniiBook`）と同じ「レコードは
+書けたがログ書き込みに失敗した」という区別ができる。書籍ごとに個別の `appendOutputText` 呼び出しに
+する案（ディスクI/O回数は増えるが失敗箇所をより細かく特定できる）は採用しなかった。件数が多いときの
+呼び出し回数増加を避け、失敗時の状態（「JSON配列は書けたがログだけ失敗した」）を単体出力と揃えられる
+ためである。
+
+### 13.6 UI（InboxView）
+
+- 書籍一覧の各カードに、`status` が `approved` / `exported` / `exported_no_embed` の書籍のみ
+  チェックボックスを表示する（`BookCard` に `ciniiEligible` / `selected` / `onToggleSelect` /
+  `selectDisabled` props を追加）
+- 一覧の上に選択件数表示・「全選択」「全解除」・「選択をCiNii JSON一括出力（N件）」ボタンを持つ
+  `.cinii-batch-panel` を配置する。実行中はボタンが `照会中… i/N` に変わり disabled になる
+- 各書籍の `sruMeta` は `pipeline.readStage(bookId, 'sru_meta')` で個別に取得する。読めない書籍は
+  `exportCiniiBatch` に渡さず、UI側で「書誌情報未取得のため対象外」件数として別途表示する
+  （`exportCiniiBatch` 自体は渡された対象に `sruMeta` が既にある前提で動くため、コアモジュールに
+  新しいスキップ理由を追加する必要がない）
+- 結果表示は「出力 N件 / スキップ M件」+ 出力ファイルの絶対パス + スキップした書籍ごとの理由一覧
+- 書籍の削除や状態変化で選択対象から外れた `book_id` は選択状態から自動的に除去する
+
+### 13.7 型
+
+```ts
+// src/pipeline/types.ts
+// CiniiSkipReason は単体出力時代の型をそのまま移動（ciniiExport.ts から re-export して既存 import を壊さない）
+export type CiniiSkipReason = 'not_reviewed' | 'no_isbn' | 'no_hit' | 'api_error'
+
+export interface CiniiBatchItemResult {
+  bookId: string
+  status: 'ok' | 'skipped'
+  reason?: CiniiSkipReason
+  detail?: string
+  ncid?: string
+  ncidReused?: boolean
+  entryCount?: number
+}
+
+export interface CiniiBatchResult {
+  exportedAt: string
+  filePath?: string
+  fileName?: string
+  okCount: number
+  skipCount: number
+  items: CiniiBatchItemResult[]
+  logPath?: string
+  logWriteError?: string
+}
+```
+
+```ts
+// src/output/ciniiBatchExport.ts
+export interface CiniiBatchTarget {
+  bookId: string
+  sruMeta: SruMetadata
+}
+
+export async function exportCiniiBatch(
+  targets: CiniiBatchTarget[],
+  now?: Date,
+  onProgress?: (done: number, total: number) => void
+): Promise<CiniiBatchResult>
+```
+
+### 13.8 テスト
+
+`src/__tests__/ciniiBatchExport.test.ts`。既存の `ciniiExport.test.ts` と同じ `vi.mock` 方式
+（`pipeline` / `lookupCiniiNcid` / `loadOutputConfig` をモック、`now` を固定 `Date` で注入）。
+
+- 既存 `cinii_books.jsonl` にNCIDがある書籍は `lookupCiniiNcid` を呼ばず、upsertもしない
+- 未出力の書籍は照会され、`cinii_books.jsonl` にもupsertされる
+- 再利用と新規照会が1回の実行内で混在するケース
+- `review.json` が読めない・空配列の書籍は `not_reviewed` でスキップされ、出力JSONに含まれない
+- 1書籍の `api_error` で他書籍の処理が継続する（`no_isbn` / `no_hit` も同様）
+- 出力JSONが配列であること、各要素が `CiniiBookRecord` の形であること、`toc` が `review.json` の
+  最新内容になること（既存jsonl行の古い `toc` を引き継がないこと）
+- ファイル名が `cinii_batch_YYYYMMDD-HHmmss.json` 形式（秒付き）になること
+- 同一分内でも秒が異なれば別ファイル名になること（同一分2回実行での追記破損を防ぐ回帰テスト）
+- ログに書籍ごとの行と `BATCH` 集計行が書かれること
+- NCID再利用書籍のログ行に `undefined` という文字列が含まれず、`isbn=` に `sruMeta.isbn` が入り
+  `note=ncid再利用` が付くこと
+- 新規照会書籍のログ行は従来どおり `isbn=` と `hits=` を含み `note=ncid再利用` を含まないこと
+- 成功0件のときはJSONファイルを作らないこと
+- `cinii_books.jsonl` が未存在（`readOutputFile` が reject）でも全件照会にフォールバックすること
+- `cinii_books.jsonl` の壊れた行を無視して続行すること
+- `onProgress` が処理済み件数を通知すること
+- ログ書き込み失敗時に `logWriteError` に残り、レコード（JSON配列ファイル）自体は失われないこと
+
+`src/__tests__/ciniiExport.test.ts` にも、`formatLogLine` の ok 分岐で `queriedIsbns` / `hits` が
+`undefined` のとき `isbn=` / `hits=` を出さず `undefined` という文字列も出力しないことを確認する
+テストを追加した（単体出力では実際には発生しないケースだが、一括出力と共有する関数のため回帰を防ぐ）。
+
+### 13.9 ドキュメント・バージョン更新
+
+- `package.json` / `Header.tsx` / `exportTEI.ts` のバージョンを `0.18.0` に更新
+- `README.md` の変更履歴に v0.18.0 の項を追加
+- `CLAUDE.md`: ディレクトリ構成に `ciniiBatchExport.ts` を追記、パイプライン処理フローとデータパスに
+  一括出力・`cinii_batch_*.json` を追記、開発フェーズのチェックリストに項目を追加
+- `docs/output-schema.md`: `cinii_batch_YYYYMMDD-HHmmss.json` の形式と `BATCH` ログ行の書式を追記
+
+**2026-09-10 追記（実装レビュー後の修正、バージョンは0.18.0のまま）:** 上記のファイル名の秒付き化と
+`formatLogLine` の `isbn=undefined hits=undefined` 修正は、コミット前の実装レビューで発見された。
+まだコミットしていない同一機能内の修正のため、バージョン番号は上げていない。

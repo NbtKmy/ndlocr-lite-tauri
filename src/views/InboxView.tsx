@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { pipeline } from '../pipeline/api'
-import type { BookManifest, BookStatus, OcrPage } from '../pipeline/types'
+import type { BookManifest, BookStatus, OcrPage, CiniiBatchResult, CiniiSkipReason } from '../pipeline/types'
 import { structureToc } from '../ai/toc-structuring'
 import { resolveIsbn, searchMonthlyAcquisitions } from '../ai/sru-client'
-import type { ResolveFailReason } from '../ai/sru-client'
+import type { ResolveFailReason, SruMetadata } from '../ai/sru-client'
+import { exportCiniiBatch } from '../output/ciniiBatchExport'
 import { loadSruConfig, saveSruConfig, DEFAULT_SRU_CONFIG } from '../utils/sruConfig'
 import type { SruConfig } from '../utils/sruConfig'
 import { loadOllamaConfig, saveOllamaConfig, DEFAULT_OLLAMA_CONFIG } from '../utils/ollamaConfig'
@@ -56,6 +57,16 @@ const RESOLVE_COLOR: Record<string, string> = {
   no_holding: '#9e9e9e',
   fetch_error: '#f44336',
   duplicate: '#9e9e9e',
+}
+
+/** CiNii JSON一括出力の対象とする書籍状態（レビュー済み見込み） */
+const CINII_ELIGIBLE_STATUSES: BookStatus[] = ['approved', 'exported', 'exported_no_embed']
+
+const CINII_SKIP_LABEL: Record<CiniiSkipReason, string> = {
+  not_reviewed: '未承認',
+  no_isbn: 'ISBNなし',
+  no_hit: 'CiNii IDなし',
+  api_error: 'CiNii APIエラー',
 }
 
 interface IsbnResolution {
@@ -115,6 +126,13 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
   const [outputDraft, setOutputDraft] = useState<OutputConfig>(loadOutputConfig)
   const [defaultOutputDir, setDefaultOutputDir] = useState('')
   const [settingsSaved, setSettingsSaved] = useState(false)
+
+  // CiNii JSON一括出力（複数書籍選択 → 1ファイル）
+  const [selectedBookIds, setSelectedBookIds] = useState<Set<string>>(new Set())
+  const [ciniiBatchBusy, setCiniiBatchBusy] = useState(false)
+  const [ciniiBatchProgress, setCiniiBatchProgress] = useState<{ done: number; total: number } | null>(null)
+  const [ciniiBatchResult, setCiniiBatchResult] = useState<CiniiBatchResult | null>(null)
+  const [ciniiBatchNoMetaCount, setCiniiBatchNoMetaCount] = useState(0)
 
   // 設定パネルが開かれたときに最新の設定を読み込む
   useEffect(() => {
@@ -418,6 +436,73 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
   const reviewPending = books.filter(b => b.status === 'review_pending' || b.status === 'llm_done')
   const exported = books.filter(b => b.status === 'exported' || b.status === 'exported_no_embed')
   const others = books.filter(b => !['pending', 'ocr_done', 'review_pending', 'llm_done', 'exported', 'exported_no_embed'].includes(b.status))
+
+  // ─── CiNii JSON一括出力（複数書籍選択 → 1ファイル） ─────────────────────────────
+  const ciniiEligibleBooks = books.filter(b => CINII_ELIGIBLE_STATUSES.includes(b.status))
+  const ciniiEligibleIds = new Set(ciniiEligibleBooks.map(b => b.book_id))
+
+  // 削除・状態変化で対象外になった書籍の選択を掃除する
+  useEffect(() => {
+    setSelectedBookIds(prev => {
+      const next = new Set([...prev].filter(id => ciniiEligibleIds.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+    // ciniiEligibleIds は books から毎回作り直される値なので内容比較の代わりに books を依存に使う
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [books])
+
+  const toggleBookSelect = useCallback((bookId: string) => {
+    setSelectedBookIds(prev => {
+      const next = new Set(prev)
+      if (next.has(bookId)) next.delete(bookId)
+      else next.add(bookId)
+      return next
+    })
+  }, [])
+
+  const selectAllCinii = useCallback(() => {
+    setSelectedBookIds(new Set(ciniiEligibleBooks.map(b => b.book_id)))
+  }, [ciniiEligibleBooks])
+
+  const deselectAllCinii = useCallback(() => {
+    setSelectedBookIds(new Set())
+  }, [])
+
+  const handleCiniiBatchExport = useCallback(async () => {
+    const targetBooks = ciniiEligibleBooks.filter(b => selectedBookIds.has(b.book_id))
+    if (targetBooks.length === 0) return
+
+    setCiniiBatchBusy(true)
+    setCiniiBatchResult(null)
+    setCiniiBatchNoMetaCount(0)
+    setCiniiBatchProgress({ done: 0, total: targetBooks.length })
+
+    try {
+      // sru_meta が読めない書籍は照会対象にできないため、ここでスキップ扱いにする
+      const targets: Array<{ bookId: string; sruMeta: SruMetadata }> = []
+      let noMeta = 0
+      for (const b of targetBooks) {
+        try {
+          const sruMeta = await pipeline.readStage<SruMetadata>(b.book_id, 'sru_meta')
+          targets.push({ bookId: b.book_id, sruMeta })
+        } catch {
+          noMeta++
+        }
+      }
+      setCiniiBatchNoMetaCount(noMeta)
+      setCiniiBatchProgress({ done: 0, total: targets.length })
+
+      const result = await exportCiniiBatch(targets, undefined, (done, total) => {
+        setCiniiBatchProgress({ done, total })
+      })
+      setCiniiBatchResult(result)
+    } catch (e) {
+      setMessage(`CiNii一括出力エラー: ${e}`)
+    } finally {
+      setCiniiBatchBusy(false)
+      setCiniiBatchProgress(null)
+    }
+  }, [ciniiEligibleBooks, selectedBookIds])
 
   return (
     <div className="inbox-view" style={hidden ? { display: 'none' } : undefined}>
@@ -738,6 +823,70 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
         )}
       </div>
 
+      {/* ── CiNii JSON一括出力（承認済み・出力済みの書籍を複数選択） ── */}
+      {ciniiEligibleBooks.length > 0 && (
+        <section className="cinii-batch-panel">
+          <div className="cinii-batch-actions">
+            <span className="cinii-batch-count">
+              CiNii出力対象: {ciniiEligibleBooks.length}冊中 {selectedBookIds.size}冊選択
+            </span>
+            <button
+              className="btn-secondary"
+              onClick={selectAllCinii}
+              disabled={ciniiBatchBusy || selectedBookIds.size === ciniiEligibleBooks.length}
+            >
+              全選択
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={deselectAllCinii}
+              disabled={ciniiBatchBusy || selectedBookIds.size === 0}
+            >
+              全解除
+            </button>
+            <button
+              className="btn-secondary"
+              onClick={handleCiniiBatchExport}
+              disabled={ciniiBatchBusy || selectedBookIds.size === 0}
+            >
+              {ciniiBatchBusy
+                ? `照会中… ${ciniiBatchProgress?.done ?? 0}/${ciniiBatchProgress?.total ?? selectedBookIds.size}`
+                : `選択をCiNii JSON一括出力（${selectedBookIds.size}件）`}
+            </button>
+          </div>
+          {ciniiBatchResult && (
+            <div className="cinii-batch-result">
+              <p className="progress-text">
+                出力 {ciniiBatchResult.okCount}件 / スキップ {ciniiBatchResult.skipCount}件
+                {ciniiBatchNoMetaCount > 0 && `（書誌情報未取得のため対象外: ${ciniiBatchNoMetaCount}件）`}
+                {ciniiBatchResult.filePath
+                  ? ` — ${ciniiBatchResult.filePath}`
+                  : ciniiBatchResult.okCount === 0
+                    ? ' — 出力対象がないためファイルは作成されていません'
+                    : ''}
+              </p>
+              {ciniiBatchResult.logWriteError && (
+                <p className="progress-text">
+                  ログ書き込みに失敗しました（レコードは出力済み）: {ciniiBatchResult.logWriteError}
+                </p>
+              )}
+              {ciniiBatchResult.items.some(i => i.status === 'skipped') && (
+                <ul className="cinii-batch-skip-list">
+                  {ciniiBatchResult.items
+                    .filter(i => i.status === 'skipped')
+                    .map(i => (
+                      <li key={i.bookId}>
+                        {i.bookId}: {CINII_SKIP_LABEL[i.reason ?? 'api_error']}
+                        {i.detail ? `（${i.detail}）` : ''}
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* ── 取り込み済み・未処理 ── */}
       {pending.length > 0 && (
         <section className="inbox-section">
@@ -751,6 +900,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 onDelete={deleteBook}
                 isProcessing={processingBookId === book.book_id}
                 isReady={true}
+                ciniiEligible={ciniiEligibleIds.has(book.book_id)}
+                selected={selectedBookIds.has(book.book_id)}
+                onToggleSelect={toggleBookSelect}
+                selectDisabled={ciniiBatchBusy}
               />
             ))}
           </div>
@@ -770,6 +923,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 onDelete={deleteBook}
                 isProcessing={processingBookId === book.book_id}
                 isReady={true}
+                ciniiEligible={ciniiEligibleIds.has(book.book_id)}
+                selected={selectedBookIds.has(book.book_id)}
+                onToggleSelect={toggleBookSelect}
+                selectDisabled={ciniiBatchBusy}
               />
             ))}
           </div>
@@ -789,6 +946,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 onDelete={deleteBook}
                 isProcessing={processingBookId === book.book_id}
                 isReady={true}
+                ciniiEligible={ciniiEligibleIds.has(book.book_id)}
+                selected={selectedBookIds.has(book.book_id)}
+                onToggleSelect={toggleBookSelect}
+                selectDisabled={ciniiBatchBusy}
               />
             ))}
           </div>
@@ -808,6 +969,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 onDelete={deleteBook}
                 isProcessing={processingBookId === book.book_id}
                 isReady={true}
+                ciniiEligible={ciniiEligibleIds.has(book.book_id)}
+                selected={selectedBookIds.has(book.book_id)}
+                onToggleSelect={toggleBookSelect}
+                selectDisabled={ciniiBatchBusy}
               />
             ))}
           </div>
@@ -827,6 +992,10 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 onDelete={deleteBook}
                 isProcessing={processingBookId === book.book_id}
                 isReady={true}
+                ciniiEligible={ciniiEligibleIds.has(book.book_id)}
+                selected={selectedBookIds.has(book.book_id)}
+                onToggleSelect={toggleBookSelect}
+                selectDisabled={ciniiBatchBusy}
               />
             ))}
           </div>
@@ -847,6 +1016,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
 
 function BookCard({
   book, onReview, onProcess, onDelete, isProcessing, isReady,
+  ciniiEligible = false, selected = false, onToggleSelect, selectDisabled = false,
 }: {
   book: BookManifest
   onReview: (id: string) => void
@@ -854,13 +1024,30 @@ function BookCard({
   onDelete: (bookId: string) => void
   isProcessing: boolean
   isReady: boolean
+  /** CiNii JSON一括出力の対象（承認済み・出力済み）ならチェックボックスを表示する */
+  ciniiEligible?: boolean
+  selected?: boolean
+  onToggleSelect?: (bookId: string) => void
+  selectDisabled?: boolean
 }) {
   const canProcess = (book.status === 'pending' || book.status === 'ocr_done') && isReady && !isProcessing
   const canReview = (book.status === 'review_pending' || book.status === 'llm_done' || book.status === 'exported' || book.status === 'exported_no_embed') && !isProcessing
 
   return (
     <div className={`book-card ${isProcessing ? 'book-card-processing' : ''}`}>
-      <div className="book-card-title" title={book.source_pdf}>{book.book_id}</div>
+      <div className="book-card-title-row">
+        {ciniiEligible && (
+          <input
+            type="checkbox"
+            className="book-card-select"
+            checked={selected}
+            disabled={selectDisabled}
+            onChange={() => onToggleSelect?.(book.book_id)}
+            title="CiNii JSON一括出力の対象に含める"
+          />
+        )}
+        <div className="book-card-title" title={book.source_pdf}>{book.book_id}</div>
+      </div>
       <div className="book-card-meta">
         <span className="status-badge" style={{ background: STATUS_COLOR[book.status] }}>
           {STATUS_LABEL[book.status]}

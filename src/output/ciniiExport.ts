@@ -9,13 +9,16 @@
 import { pipeline } from '../pipeline/api'
 import { lookupCiniiNcid } from '../ai/cinii-client'
 import type { SruMetadata } from '../ai/sru-client'
-import type { ReviewedEntry, CiniiBookRecord, CiniiTocEntry } from '../pipeline/types'
+import type { ReviewedEntry, CiniiBookRecord, CiniiTocEntry, CiniiSkipReason } from '../pipeline/types'
 import { loadOutputConfig } from '../utils/outputConfig'
 
-const CINII_FILE = 'cinii_books.jsonl'
-const LOG_FILE = 'cinii_export.log'
+/** cinii_books.jsonl / cinii_export.log のファイル名。バッチ出力（ciniiBatchExport.ts）と共有する */
+export const CINII_FILE = 'cinii_books.jsonl'
+export const LOG_FILE = 'cinii_export.log'
 
-export type CiniiSkipReason = 'not_reviewed' | 'no_isbn' | 'no_hit' | 'api_error'
+// 単体出力時代からの型はそのまま re-export し、既存の import 経路を壊さない。
+// 実体は pipeline/types.ts（ciniiBatchExport.ts の CiniiBatchItemResult と共有するため）。
+export type { CiniiSkipReason }
 
 export interface CiniiExportResult {
   status: 'ok' | 'skipped'
@@ -41,7 +44,8 @@ function splitLogPath(path: string): { dir: string; sep: string } {
   return { dir: path.slice(0, cut), sep: path[cut] }
 }
 
-function outputDir(): string | undefined {
+/** 出力先ディレクトリ設定を読む。バッチ出力（ciniiBatchExport.ts）と共有する */
+export function outputDir(): string | undefined {
   const dir = loadOutputConfig().outputDir
   return dir || undefined
 }
@@ -70,6 +74,29 @@ function toCiniiTocEntry(e: ReviewedEntry): CiniiTocEntry {
   }
 }
 
+/**
+ * review.json + sruMeta + 採用済み NCID から CiniiBookRecord を組み立てる。
+ * 単体出力（exportCiniiBook）とバッチ出力（ciniiBatchExport.ts）で共有する。
+ * toc は毎回 entries から作り直すため、既存 jsonl 行の古い toc を引き継がない。
+ */
+export function buildCiniiRecord(
+  bookId: string,
+  sruMeta: SruMetadata,
+  entries: ReviewedEntry[],
+  ncid: string,
+  exportedAt: string
+): CiniiBookRecord {
+  return {
+    book_id: bookId,
+    cinii_ncid: ncid,
+    title: sruMeta.titleOriginal ?? sruMeta.titleRomanized,
+    pub_year: sruMeta.pubYear,
+    isbn: sruMeta.isbn,
+    exported_at: exportedAt,
+    toc: entries.map(toCiniiTocEntry),
+  }
+}
+
 /** ログは1イベント1行のため、値に含まれる改行を空白に畳む */
 function oneLine(s: string): string {
   return s.replace(/[\r\n]+/g, ' ')
@@ -81,8 +108,10 @@ export function formatLogLine(r: CiniiExportResult, bookId: string): string {
   if (r.status === 'ok') {
     parts.push('OK  ')
     parts.push(`ncid=${r.ncid}`)
-    parts.push(`isbn=${r.queriedIsbns?.join(',')}`)
-    parts.push(`hits=${r.hits}`)
+    // バッチ出力でNCIDを再利用した場合は照会していないため queriedIsbns/hits が undefined になる。
+    // SKIP分岐と同様に値がある場合のみ push し、ログに "undefined" という文字列を出さない。
+    if (r.queriedIsbns?.length) parts.push(`isbn=${r.queriedIsbns.join(',')}`)
+    if (r.hits !== undefined) parts.push(`hits=${r.hits}`)
     parts.push(`entries=${r.entryCount}`)
     if ((r.hits ?? 0) > 1) {
       parts.push(`note=複数${r.hits}件ヒット→先頭採用`)
@@ -147,15 +176,7 @@ export async function exportCiniiBook(
   }
 
   // ③ レコード組立と書き込み
-  const record: CiniiBookRecord = {
-    book_id: bookId,
-    cinii_ncid: lookup.ncid,
-    title: sruMeta.titleOriginal ?? sruMeta.titleRomanized,
-    pub_year: sruMeta.pubYear,
-    isbn: sruMeta.isbn,
-    exported_at: exportedAt,
-    toc: entries.map(toCiniiTocEntry),
-  }
+  const record: CiniiBookRecord = buildCiniiRecord(bookId, sruMeta, entries, lookup.ncid, exportedAt)
   await pipeline.upsertOutputRecords(CINII_FILE, bookId, [record], dir)
 
   const result: CiniiExportResult = {

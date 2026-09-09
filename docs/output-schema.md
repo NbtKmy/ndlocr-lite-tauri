@@ -13,6 +13,7 @@ data/output/
   toc_pdf/{book_id}.pdf … 目次PDF（1書籍1ファイル、任意生成。DB取り込み対象外）
   cinii_books.jsonl … 1行1書籍。CiNii Books ID付き・埋め込みなし（任意生成。DB取り込み対象外）
   cinii_export.log  … CiNii照会・出力ログ（任意生成。DB取り込み対象外）
+  cinii_batch_YYYYMMDD-HHmmss.json … 複数書籍のCiNii JSONをまとめた配列（InboxViewから一括生成。DB取り込み対象外）
 ```
 
 `toc_pdf/{book_id}.pdf` はDB投入用JSONLとは独立した補助出力（ReviewViewから手動生成）。
@@ -108,6 +109,35 @@ SRU（MARC-XML）由来の書誌・所蔵メタデータを含む。`OutputBook`
 出力対象は承認時に確定した `work/{mmsId}/review.json` のみ。CiNii Books ID が取得できなかった
 書籍（ISBNなし・ヒット0件・API失敗）はこのファイルに出力されず、`cinii_export.log` にのみ記録される。
 
+## cinii_batch_YYYYMMDD-HHmmss.json（補助出力・DB取り込み対象外）
+
+InboxView の書籍一覧で複数書籍を選択し「選択をCiNii JSON一括出力」を実行したときに生成される、
+複数書籍分の `CiniiBookRecord`（`cinii_books.jsonl` の1行と同じ形）を1つのJSON配列にまとめたファイル。
+`CiniiBatchResult`（`src/pipeline/types.ts`）が返す `fileName` がそのままファイル名になる。
+ファイル名は秒まで含む。分単位にすると同一分内で2回実行した場合に `append_output_text` の追記により
+既存ファイル末尾に配列が追記され `[...]\n[...]` という不正なJSONになってしまうため。
+
+```jsonc
+[
+  {
+    "book_id": "991234567890",
+    "cinii_ncid": "BB08395220",
+    "title": "夕陽カ丘三号館",
+    "pub_year": "2012",
+    "isbn": ["9784167137113"],
+    "exported_at": "2026-09-10T14:05:00+09:00",
+    "toc": [ { "seq": 1, "level": 1, "heading_text": "第一章 転居", "page_number": 5, "contributor": null } ]
+  }
+]
+```
+
+同一の一括出力実行内で選択した書籍は全て同じ `exported_at` を持つ（バッチ全体で1回だけ生成する）。
+既存の `cinii_books.jsonl` に既知の NCID がある書籍は CiNii へ再照会せずそのNCIDを再利用するが、
+`toc` は常にそのときの `review.json` から作り直すため、古い `toc` を引き継ぐことはない。
+新規に照会して得たNCIDの書籍のみ `cinii_books.jsonl` にも upsert され、次回以降の一括出力で再利用できる。
+`review.json` が無い書籍・ISBNがない書籍・CiNiiでヒットしない書籍・API失敗した書籍はこの配列に含まれず、
+`cinii_export.log` にのみ記録される（下記）。
+
 ## cinii_export.log（補助出力・DB取り込み対象外）
 
 1イベント1行のプレーンテキスト。行頭のタイムスタンプは同じ出力処理で書かれた
@@ -133,6 +163,24 @@ ISBNを複数照会した書籍は `isbn=` がカンマ区切りになる（例:
 `cinii_books.jsonl` には行が存在するのに対応するログ行が無い状態になる。この場合、アプリはエラーとして
 握らず、レコードは書き込めたがログ書き込みに失敗したことを画面に明示する。ボタンを再度押せば
 `cinii_books.jsonl` の upsert は同じ `book_id` の行を置き換えるだけなので、再実行は安全（idempotent）である。
+
+一括出力（`cinii_batch_*.json`）の場合、書籍ごとの行に加えて実行の最後に集計行が1行追記される。
+
+```
+2026-09-10T14:05:00+09:00 991234567892 OK   ncid=BB09999999 isbn=9784167137113 entries=12 note=ncid再利用
+2026-09-10T14:05:00+09:00 BATCH file=cinii_batch_20260910-140500.json ok=3 skip=1
+```
+
+`file=` は生成したJSON配列ファイル名（成功0件のときは `(none)`）、`ok=` / `skip=` は今回の実行での
+成功・スキップ件数。この行のタイムスタンプも同一実行内の書籍ごとの行と同じ `exported_at` を使う。
+
+一括出力で `cinii_books.jsonl` の既存NCIDを再利用した書籍は、CiNiiへ照会していないため `hits=` を
+持たない代わりに末尾に `note=ncid再利用` が付く。`isbn=` はこの場合「実際に照会したISBN」ではなく
+`SruMetadata.isbn`（その書籍のISBN）をそのまま使う。照会していないのに `isbn=` /`hits=` を無条件に
+出力すると、値が無い（`undefined`）ままログに出力されてしまう不具合が過去にあったため、`formatLogLine`
+は値がある場合のみ `isbn=` / `hits=` を出す。新規に照会した書籍は従来どおり `isbn=`（照会したISBN）と
+`hits=` を持ち、`note=ncid再利用` は付かない（`hits > 1` のときの既存の `note=複数N件ヒット→先頭採用`
+とは排他で、再利用時は `hits` 自体を持たないため両者が同時に出ることはない）。
 
 `hits` は「照会した ISBN 群のいずれかに該当した CiNii レコード件数」であり、1つのISBNに対する件数ではない
 （`src/ai/cinii-client.ts` の単一 OR クエリ化以降）。`isbn=` に2件以上を渡した書籍では `hits` が2以上に

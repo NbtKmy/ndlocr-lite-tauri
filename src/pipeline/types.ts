@@ -108,3 +108,32 @@ export interface CiniiBookRecord {
   exported_at: string      // ISO8601（cinii_export.log の行頭と同一値）
   toc: CiniiTocEntry[]
 }
+
+/** CiNii 出力（単体・一括共通）のスキップ理由 */
+export type CiniiSkipReason = 'not_reviewed' | 'no_isbn' | 'no_hit' | 'api_error'
+
+/** CiNii JSON一括出力（cinii_batch_*.json）の1書籍分の処理結果 */
+export interface CiniiBatchItemResult {
+  bookId: string
+  status: 'ok' | 'skipped'
+  reason?: CiniiSkipReason
+  detail?: string
+  ncid?: string
+  /** cinii_books.jsonl から既存NCIDを再利用したか（true ならCiNii照会せず・upsertもしない） */
+  ncidReused?: boolean
+  entryCount?: number
+}
+
+/** CiNii JSON一括出力の全体結果 */
+export interface CiniiBatchResult {
+  exportedAt: string
+  /** 出力したJSON配列ファイルの絶対パス。成功0件なら未設定 */
+  filePath?: string
+  /** 出力したJSON配列ファイル名（cinii_batch_YYYYMMDD-HHmmss.json、秒まで含む）。成功0件なら未設定 */
+  fileName?: string
+  okCount: number
+  skipCount: number
+  items: CiniiBatchItemResult[]
+  logPath?: string
+  logWriteError?: string
+}

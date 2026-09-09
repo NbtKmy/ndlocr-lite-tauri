@@ -3126,8 +3126,30 @@ button:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 
   gap: 8px;
 }
 
+.book-card-title-row { display: flex; align-items: flex-start; gap: 6px; }
+.book-card-select { margin-top: 2px; flex-shrink: 0; cursor: pointer; }
 .book-card-title { font-weight: 600; font-size: 0.9rem; word-break: break-all; }
 .book-card-meta { display: flex; align-items: center; gap: 8px; }
+
+.cinii-batch-panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.cinii-batch-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.cinii-batch-count { font-size: 0.85rem; color: var(--color-text-secondary); }
+.cinii-batch-result { display: flex; flex-direction: column; gap: 4px; }
+.cinii-batch-skip-list {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  margin: 0;
+  padding-left: 18px;
+}
 .book-pages { font-size: 0.8rem; color: var(--color-text-secondary); }
 
 .status-badge {

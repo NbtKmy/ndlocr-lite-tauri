@@ -127,9 +127,10 @@ ndlocr-lite-web-ai/
 │   ├── output/
 │   │   ├── writer.ts              # JSONL出力（books.jsonl / entries.jsonl）
 │   │   ├── tocPdf.ts              # 目次PDF出力（1書籍1PDF、pdf-lib + IPAexゴシック）
-│   │   └── ciniiExport.ts         # CiNii ID付き目次JSONL出力（埋め込みなし）+ 照会ログ
+│   │   ├── ciniiExport.ts         # CiNii ID付き目次JSONL出力（単体、埋め込みなし）+ 照会ログ。レコード組立・出力先解決を一括出力と共有
+│   │   └── ciniiBatchExport.ts    # CiNii ID付き目次JSON一括出力（複数書籍→1つのJSON配列、既知NCIDはcinii_books.jsonlから再利用）
 │   ├── views/
-│   │   ├── InboxView.tsx          # 書籍キュー（ISBN入力・CSV一括・SRU解決ログ・処理状態管理）
+│   │   ├── InboxView.tsx          # 書籍キュー（ISBN入力・CSV一括・SRU解決ログ・処理状態管理・CiNii JSON一括出力）
 │   │   ├── ReviewView.tsx         # human-in-the-loop レビュー（PDF表示・エントリ編集・自動保存・出力確認）
 │   │   └── EntryEditor.tsx        # 目次エントリ編集（テーブル/Markdown切替・ページフィルタ・キーボード操作）
 │   ├── utils/
@@ -190,6 +191,8 @@ ISBN入力（単体 / CSV一括）
   → JSONL出力（books.jsonl + entries.jsonl、出力先設定可）
   → 目次PDF出力（任意・手動: ReviewViewの「PDF出力」ボタン、1書籍1PDF、ファイル名はMMS ID）
   → CiNii JSON出力（任意・手動: ReviewViewの「CiNii JSON出力」ボタン、対象は review.json のみ）
+  → CiNii JSON一括出力（任意・手動: InboxViewで承認済み/出力済み書籍を複数選択 →「選択をCiNii JSON一括出力」ボタン、
+    1つのJSON配列ファイルにまとめて出力。既知NCIDはcinii_books.jsonlから再利用しCiNii照会をスキップ）
 
 データパス（macOS）:
   ~/Library/Application Support/com.nobu.ndltococr/data/
@@ -197,8 +200,9 @@ ISBN入力（単体 / CSV一括）
     work/{mmsId}/  # manifest.json / ocr.json / draft.json / sru_meta.json / review.json
     output/    # books.jsonl / entries.jsonl（設定で変更可）
       toc_pdf/{mmsId}.pdf  # 目次PDF（見出し・著者名、ページ番号なし）
-      cinii_books.jsonl    # CiNii ID付き目次JSONL（埋め込みなし、1書籍1行）
-      cinii_export.log     # CiNii照会・出力ログ（exported_at で JSONL と突合）
+      cinii_books.jsonl    # CiNii ID付き目次JSONL（埋め込みなし、1書籍1行、単体出力+一括出力の新規照会分がupsertされる）
+      cinii_export.log     # CiNii照会・出力ログ（exported_at で JSONL/JSON と突合、一括出力は末尾にBATCH集計行）
+      cinii_batch_YYYYMMDD-HHmmss.json  # CiNii ID付き目次JSON一括出力（複数書籍をまとめた配列、InboxViewから手動生成、秒まで含むファイル名）
     done/      # 処理済みPDF（将来用）
 ```
 
@@ -240,6 +244,7 @@ ISBN入力（単体 / CSV一括）
 - [x] MARC 880リンク解決バグ修正（/Jpanスクリプトコード除去）
 - [x] 目次PDF出力（pdf-lib + IPAexゴシック、1書籍1PDF、ReviewViewから手動生成）
 - [x] CiNii Books ID 付き目次JSONL出力（埋め込みなし、`cinii_books.jsonl` + `cinii_export.log`、ReviewViewから手動生成）
+- [x] CiNii JSON一括出力（InboxViewで複数書籍選択 → 1つのJSON配列ファイル、既知NCIDはcinii_books.jsonlから再利用）
 - [ ] LLMプロンプト品質改善（qwen2.5系での構造化精度、保留中）
 
 ## UI設計仕様
