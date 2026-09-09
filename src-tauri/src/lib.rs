@@ -351,17 +351,38 @@ async fn http_get(url: String, timeout_secs: Option<u64>) -> Result<String, Stri
 }
 
 /// URLからPDFをダウンロードしてinboxディレクトリに保存、保存先フルパスを返す
+// PDFファイル転送はhttp_getの対話的なルックアップとは異なり、サーバー側の応答が遅くても
+// 進行中であれば打ち切りたくないため、30秒より長い120秒を固定値として使う
+// （reqwest::Client::new()にはデフォルトタイムアウトがなく、ハングした接続がコマンドを無期限に停止させてしまう）
+const DOWNLOAD_PDF_TIMEOUT_SECS: u64 = 120;
+
 #[tauri::command]
 async fn download_pdf(app: AppHandle, url: String, filename: String) -> Result<String, String> {
-    let resp = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(DOWNLOAD_PDF_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| format!("download_pdf client build failed: {e}"))?;
+    let resp = client
         .get(&url)
         .send()
         .await
-        .map_err(|e| format!("download_pdf failed: {e}"))?;
+        .map_err(|e| {
+            if e.is_timeout() {
+                format!("download_pdf timeout ({DOWNLOAD_PDF_TIMEOUT_SECS}s): {url}")
+            } else {
+                format!("download_pdf failed: {e}")
+            }
+        })?;
     if !resp.status().is_success() {
         return Err(format!("download_pdf error: {}", resp.status()));
     }
-    let bytes = resp.bytes().await.map_err(|e| format!("download_pdf read: {e}"))?;
+    let bytes = resp.bytes().await.map_err(|e| {
+        if e.is_timeout() {
+            format!("download_pdf timeout ({DOWNLOAD_PDF_TIMEOUT_SECS}s): {url}")
+        } else {
+            format!("download_pdf read: {e}")
+        }
+    })?;
     let inbox = data_dir(&app).join("inbox");
     fs::create_dir_all(&inbox).map_err(|e| e.to_string())?;
     let dest = inbox.join(&filename);
