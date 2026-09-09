@@ -58,7 +58,7 @@
 | `cinii_ncid` | CiNii OpenSearch | 取得できなかった場合はレコード自体を出力しない（第 8 章） |
 | `title` | `SruMetadata.titleOriginal ?? titleRomanized` | 原表記を優先。CiNii の `dc:title` は使わない |
 | `pub_year` | `SruMetadata.pubYear` | |
-| `isbn` | `SruMetadata.isbn` | SRU から得た配列をそのまま。正規化前の生値 |
+| `isbn` | `SruMetadata.isbn` | SRU から得た配列をそのまま。`cleanIsbn` で正規化済み（ハイフン・末尾の付記は除去済み） |
 | `exported_at` | 出力処理の開始時に 1 回生成 | ISO8601（オフセット付き）。ログ行と同一値 |
 | `toc` | `work/{mmsId}/review.json` | 承認時に確定したエントリ（第 6 章） |
 
