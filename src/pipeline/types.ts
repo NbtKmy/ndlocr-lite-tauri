@@ -88,3 +88,23 @@ export interface OutputBook {
   processed_at: string
   embedding?: number[]     // 書籍レベルベクトル（(a)）
 }
+
+/** cinii_books.jsonl の目次エントリ（OCR中間情報・信頼度・埋め込みを含まない） */
+export interface CiniiTocEntry {
+  seq: number
+  level: number
+  heading_text: string
+  page_number: number | null
+  contributor: string | null
+}
+
+/** cinii_books.jsonl の1レコード（1書籍1行、埋め込みなし） */
+export interface CiniiBookRecord {
+  book_id: string          // MMS ID（upsert キー）
+  cinii_ncid: string       // 例 BB08395220
+  title: string | null     // SRU: titleOriginal ?? titleRomanized
+  pub_year: string | null
+  isbn: string[]           // SRU 由来の生値
+  exported_at: string      // ISO8601（cinii_export.log の行頭と同一値）
+  toc: CiniiTocEntry[]
+}
