@@ -384,4 +384,27 @@ describe('exportCiniiBook', () => {
     expect(r.hits).toBe(3)
     expect(appendText.mock.calls[0][1]).toContain('note=複数3件ヒット→先頭採用')
   })
+
+  it('成功時にログ書き込みが失敗しても status は ok のままで logWriteError を持つ', async () => {
+    readStage.mockResolvedValue([entry(1)])
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
+    appendText.mockRejectedValue(new Error('disk full'))
+
+    const r = await exportCiniiBook('991234567890', META, FIXED)
+
+    expect(r.status).toBe('ok')
+    expect(r.logWriteError).toBe('Error: disk full')
+    expect(upsert).toHaveBeenCalledTimes(1)
+  })
+
+  it('成功時にログ書き込みが失敗した場合、jsonlPath と logPath は未設定になる', async () => {
+    readStage.mockResolvedValue([entry(1)])
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
+    appendText.mockRejectedValue(new Error('disk full'))
+
+    const r = await exportCiniiBook('991234567890', META, FIXED)
+
+    expect(r.jsonlPath).toBeUndefined()
+    expect(r.logPath).toBeUndefined()
+  })
 })

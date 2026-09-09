@@ -29,6 +29,8 @@ export interface CiniiExportResult {
   logPath?: string
   /** 書き込んだ cinii_books.jsonl の絶対パス。成功時のみ設定 */
   jsonlPath?: string
+  /** レコードは出力できたがログ書き込みが失敗した場合のみ設定 */
+  logWriteError?: string
   exportedAt: string
 }
 
@@ -164,8 +166,15 @@ export async function exportCiniiBook(
     queriedIsbns: lookup.queriedIsbns,
     entryCount: entries.length,
   }
-  result.logPath = await pipeline.appendOutputText(LOG_FILE, formatLogLine(result, bookId), dir)
-  const { dir: logDir, sep } = splitLogPath(result.logPath)
-  result.jsonlPath = `${logDir}${sep}${CINII_FILE}`
+  // レコード(cinii_books.jsonl)は既に書き込み済み。ここでのログ書き込み失敗を
+  // 呼び出し元に伝播させると「何も書けなかった」ように見えてしまい実際と食い違うため、
+  // status は ok のまま保ち logWriteError に詳細を残して呼び出し元に正直に伝える。
+  try {
+    result.logPath = await pipeline.appendOutputText(LOG_FILE, formatLogLine(result, bookId), dir)
+    const { dir: logDir, sep } = splitLogPath(result.logPath)
+    result.jsonlPath = `${logDir}${sep}${CINII_FILE}`
+  } catch (e) {
+    result.logWriteError = String(e)
+  }
   return result
 }

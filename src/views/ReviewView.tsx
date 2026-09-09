@@ -204,7 +204,11 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     try {
       const meta = sruMeta ?? makeFallbackMeta(bookId)
       const r = await exportCiniiBook(bookId, meta)
-      if (r.status === 'ok') {
+      if (r.status === 'ok' && r.logWriteError) {
+        setCiniiMessage(
+          `cinii_books.jsonl にレコードを出力しましたが、ログ書き込みに失敗しました: ${r.logWriteError}`
+        )
+      } else if (r.status === 'ok') {
         const multi = (r.hits ?? 0) > 1 ? `（${r.hits}件ヒット→先頭採用）` : ''
         setCiniiMessage(
           `CiNii JSON出力しました: ${r.jsonlPath}` +
