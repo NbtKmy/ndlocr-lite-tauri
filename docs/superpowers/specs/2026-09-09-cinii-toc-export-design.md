@@ -171,9 +171,7 @@ NCID の形式は `/^[A-Za-z0-9]+$/` で軽く検証する。これに一致し�
 | `src/output/ciniiExport.ts` | レコード組立・JSONL 書き込み・ログ書き込み。CiNii 照会は `cinii-client` に委譲 |
 | `src/__tests__/ciniiClient.test.ts` | 照会ロジックのユニットテスト |
 | `src/__tests__/ciniiExport.test.ts` | レコード組立とログ書式のユニットテスト |
-| `src/__tests__/fixtures/cinii-hit1.json` | 実 API レスポンス（1 件ヒット） |
-| `src/__tests__/fixtures/cinii-hit0.json` | 実 API レスポンス（0 件、`items` キーなし） |
-| `src/__tests__/fixtures/cinii-hit3.json` | 複数ヒット（`cinii-hit1.json` の `items` を 3 件に増やした加工版） |
+| `src/__tests__/fixtures/ciniiResponses.ts` | API レスポンスのフィクスチャ 3 種を JSON 文字列として `export`。1 件ヒット・0 件（`items` キーなし）は実測値、複数ヒットは 1 件ヒットの `items` を 3 件に増やした加工版。`tsconfig.app.json` に `resolveJsonModule` がないため `.json` ではなく `.ts` にする |
 
 ### 変更ファイル
 
@@ -307,9 +305,15 @@ UI メッセージ用のパスは、`append_output_text` が返したログの�
 
 ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` ボタンを追加する。既存の `PDF出力` ボタンの隣に置き、クラスは `btn-secondary` を使う。
 
-- 表示条件: `phase === 'review'` または `phase === 'done'`。現在ボタン群は `phase === 'review'` のみで描画されているため、条件分岐を追加する
 - `ciniiBusy` が真の間は `disabled` にし、ラベルを `CiNii照会中…` に変える
 - 結果は `ciniiMessage` state に入れ、既存の `.progress-text` クラスで表示する。`pdfMessage` とは別 state にする（同時に押した際に互いを潰さないため）
+
+表示条件は `phase === 'review'` と `phase === 'done'` の両方だが、**両者は描画箇所が異なる**。`phase === 'done'` は `src/views/ReviewView.tsx:313-334` で早期リターンし `.review-done` 画面を返すため、ヘッダーを描画しない。したがって:
+
+- `phase === 'review'` → `.review-header-actions` 内、`PDF出力` ボタンの隣。メッセージは既存の `pdfMessage` と同じ形で `.progress-text` の `<span>` として表示
+- `phase === 'done'` → `.review-done` 画面 2 種（`embedFailed` 時の「⚠️ 埋め込みなしで出力済み」と通常の「✅ 承認完了」）それぞれの `.review-done-actions` 内。メッセージは `.progress-text` の `<p>` として表示。通常の承認完了画面は現在 `.review-done-actions` のラッパーを持たないため追加する
+
+ボタンの JSX は早期リターンより前に変数として組み立て、3 箇所から参照して重複を避ける。
 
 メッセージ文言:
 
