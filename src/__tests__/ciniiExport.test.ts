@@ -83,7 +83,7 @@ describe('formatLogLine', () => {
           status: 'ok',
           exportedAt: '2026-09-09T20:52:26+09:00',
           ncid: 'BB08395220',
-          queriedIsbn: '9784167137113',
+          queriedIsbns: ['9784167137113'],
           hits: 1,
           entryCount: 42,
         },
@@ -94,6 +94,24 @@ describe('formatLogLine', () => {
     )
   })
 
+  it('OK 行（複数ISBNを照会した場合は isbn がカンマ区切りになる）', () => {
+    expect(
+      formatLogLine(
+        {
+          status: 'ok',
+          exportedAt: '2026-09-09T20:52:26+09:00',
+          ncid: 'BB08395220',
+          queriedIsbns: ['9784167137113', '9784101132150'],
+          hits: 1,
+          entryCount: 42,
+        },
+        '991234567890'
+      )
+    ).toBe(
+      '2026-09-09T20:52:26+09:00 991234567890 OK   ncid=BB08395220 isbn=9784167137113,9784101132150 hits=1 entries=42'
+    )
+  })
+
   it('OK 行（複数ヒットは note を付ける）', () => {
     expect(
       formatLogLine(
@@ -101,7 +119,7 @@ describe('formatLogLine', () => {
           status: 'ok',
           exportedAt: '2026-09-09T20:53:44+09:00',
           ncid: 'BA12345678',
-          queriedIsbn: '9784200000000',
+          queriedIsbns: ['9784200000000'],
           hits: 3,
           entryCount: 18,
         },
@@ -119,7 +137,7 @@ describe('formatLogLine', () => {
           status: 'skipped',
           reason: 'no_hit',
           exportedAt: '2026-09-09T20:53:01+09:00',
-          queriedIsbn: '9784100000000',
+          queriedIsbns: ['9784100000000'],
           hits: 0,
         },
         '991235000000'
@@ -151,7 +169,7 @@ describe('formatLogLine', () => {
         status: 'skipped',
         reason: 'api_error',
         exportedAt: '2026-09-09T20:56:33+09:00',
-        queriedIsbn: '9784300000000',
+        queriedIsbns: ['9784300000000'],
         detail: 'http_get error: 503',
       },
       '991239000000'
@@ -191,7 +209,7 @@ describe('exportCiniiBook', () => {
 
   it('toc は5項目のみで、OCR中間情報・信頼度・埋め込みを含まない', async () => {
     readStage.mockResolvedValue([entry(1), entry(2)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
 
     await exportCiniiBook('991234567890', META, FIXED)
 
@@ -210,7 +228,7 @@ describe('exportCiniiBook', () => {
 
   it('書誌フィールドを SRU メタデータから組み立てる', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
 
     await exportCiniiBook('991234567890', META, FIXED)
 
@@ -224,7 +242,7 @@ describe('exportCiniiBook', () => {
 
   it('titleOriginal が null なら titleRomanized を使う', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
 
     await exportCiniiBook('991234567890', { ...META, titleOriginal: null }, FIXED)
 
@@ -234,7 +252,7 @@ describe('exportCiniiBook', () => {
 
   it('exported_at とログ行のタイムスタンプが同一値になる', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
 
     const r = await exportCiniiBook('991234567890', META, FIXED)
 
@@ -246,7 +264,7 @@ describe('exportCiniiBook', () => {
 
   it('upsertOutputRecords を cinii_books.jsonl と book_id で呼ぶ', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
 
     await exportCiniiBook('991234567890', META, FIXED)
 
@@ -260,7 +278,7 @@ describe('exportCiniiBook', () => {
 
   it('成功時は jsonlPath をログパスから導出する', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
 
     const r = await exportCiniiBook('991234567890', META, FIXED)
 
@@ -272,7 +290,7 @@ describe('exportCiniiBook', () => {
 
   it('Windows形式のログパスでも jsonlPath を正しく組み立てる', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: 'BB08395220', hits: 1, queriedIsbns: ['9784167137113'] })
     appendText.mockResolvedValue(
       'C:\\Users\\nobu\\AppData\\Roaming\\com.nobu.ndltococr\\data\\output\\cinii_export.log'
     )
@@ -309,7 +327,7 @@ describe('exportCiniiBook', () => {
 
   it('有効な ISBN がなければ no_isbn で JSONL を書かない', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: null, hits: 0, queriedIsbn: null })
+    lookup.mockResolvedValue({ ncid: null, hits: 0, queriedIsbns: [] })
 
     const r = await exportCiniiBook('991234567890', { ...META, isbn: [] }, FIXED)
 
@@ -319,12 +337,12 @@ describe('exportCiniiBook', () => {
 
   it('ヒット0件なら no_hit で JSONL を書かない', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: null, hits: 0, queriedIsbn: '9784167137113' })
+    lookup.mockResolvedValue({ ncid: null, hits: 0, queriedIsbns: ['9784167137113'] })
 
     const r = await exportCiniiBook('991234567890', META, FIXED)
 
     expect(r.reason).toBe('no_hit')
-    expect(r.queriedIsbn).toBe('9784167137113')
+    expect(r.queriedIsbns).toEqual(['9784167137113'])
     expect(upsert).not.toHaveBeenCalled()
     expect(r.logPath).toBe(LOG_PATH)
   })
@@ -334,7 +352,7 @@ describe('exportCiniiBook', () => {
     lookup.mockResolvedValue({
       ncid: null,
       hits: 0,
-      queriedIsbn: '9784167137113',
+      queriedIsbns: ['9784167137113'],
       error: 'http_get error: 503',
     })
 
@@ -347,7 +365,7 @@ describe('exportCiniiBook', () => {
 
   it('複数ヒット時は hits を保持する', async () => {
     readStage.mockResolvedValue([entry(1)])
-    lookup.mockResolvedValue({ ncid: 'BA12345678', hits: 3, queriedIsbn: '9784200000000' })
+    lookup.mockResolvedValue({ ncid: 'BA12345678', hits: 3, queriedIsbns: ['9784200000000'] })
 
     const r = await exportCiniiBook('991234567890', META, FIXED)
 

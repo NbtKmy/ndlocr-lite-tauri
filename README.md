@@ -292,6 +292,11 @@ npm run mcp-server
 
 ## 変更履歴
 
+### v0.17.1（2026-09-09）
+
+- fix: `http_get` にタイムアウトを設定可能にした。`reqwest::Client::new()` にはデフォルトのタイムアウトがなく、通信が固まるとCiNii出力ボタンが進捗表示のまま止まりアプリ再起動しか手段がなかった問題を修正。デフォルト30秒、呼び出し側から上書き可能
+- refactor: CiNii照会をISBN候補ごとの逐次リクエストから単一の `OR` クエリに変更。最悪ケースのリクエスト数がN回から1回に減り、ハング時の待ち時間もタイムアウト1回分に収まる。CiNii照会は15秒でタイムアウト
+
 ### v0.17.0（2026-09-09）
 
 - feat: CiNii Books ID 付き目次JSONL出力を追加。ISBN から CiNii Books OpenSearch API で NCID を解決し、タイトル・出版年・ISBN・NCID と目次データを1書籍1行にまとめた `cinii_books.jsonl` を出力（埋め込みなし）。ReviewViewに「CiNii JSON出力」ボタンを追加

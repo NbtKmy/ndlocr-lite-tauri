@@ -8,17 +8,17 @@ import { cleanIsbn } from './sru-client'
 
 const ENDPOINT = 'https://ci.nii.ac.jp/books/opensearch/search'
 
+/** CiNii 照会のタイムアウト（秒）。1リクエストで済むので短めに切る */
+const TIMEOUT_SECS = 15
+
 export interface CiniiLookup {
   /** 採用した NCID。見つからなければ null */
   ncid: string | null
-  /** 採用した候補の totalResults。照会に至らなかった場合は 0 */
+  /** ISBN群のいずれかに該当した CiNii レコード件数。照会に至らなかった場合は 0 */
   hits: number
-  /**
-   * 照会した正規化済み ISBN。
-   * ヒット時は採用した候補、非ヒット時は最後に照会した候補。有効候補がなければ null
-   */
-  queriedIsbn: string | null
-  /** 全候補で通信・解析が失敗した場合のみ設定 */
+  /** 実際に照会した正規化済み ISBN の一覧。有効候補がなければ空配列 */
+  queriedIsbns: string[]
+  /** 通信・解析失敗時のみ設定 */
   error?: string
 }
 
@@ -64,49 +64,29 @@ export function parseCiniiResponse(json: string): ParsedChannel {
 }
 
 /**
- * ISBN 候補を先頭から順に照会し、最初に NCID が取れたものを採用する
- * 通信エラーは打ち切らず次の候補を試す。1 度でも取得・解析に成功していれば error は設定しない
+ * ISBN 候補群を CiNii OpenSearch API に1リクエストでまとめて照会する
+ * 020 $a の ISBN は全て同じ資源のものなので、OR で1リクエストにまとめられる。
+ * 返却順はAPI依存だが、どの候補で当たっても等価なため items[0] を採用してよい。
  */
 export async function lookupCiniiNcid(isbns: string[]): Promise<CiniiLookup> {
   const candidates = [...new Set(isbns.map((s) => cleanIsbn(s).toUpperCase()).filter(isValidIsbn))]
   if (candidates.length === 0) {
-    return { ncid: null, hits: 0, queriedIsbn: null }
+    return { ncid: null, hits: 0, queriedIsbns: [] }
   }
 
-  let lastIsbn: string | null = null
-  let lastError: string | undefined
-  let sawSuccess = false
+  const url = `${ENDPOINT}?isbn=${encodeURIComponent(candidates.join(' OR '))}&format=json`
 
-  for (const isbn of candidates) {
-    lastIsbn = isbn
-    const url = `${ENDPOINT}?isbn=${encodeURIComponent(isbn)}&format=json`
-
-    let body: string
-    try {
-      body = await pipeline.httpGet(url)
-    } catch (e) {
-      lastError = String(e)
-      continue
-    }
-
-    let parsed: ParsedChannel
-    try {
-      parsed = parseCiniiResponse(body)
-    } catch (e) {
-      lastError = `CiNii レスポンス解析失敗: ${e}`
-      continue
-    }
-
-    sawSuccess = true
-    if (parsed.ncid) {
-      return { ncid: parsed.ncid, hits: parsed.hits, queriedIsbn: isbn }
-    }
+  let body: string
+  try {
+    body = await pipeline.httpGet(url, TIMEOUT_SECS)
+  } catch (e) {
+    return { ncid: null, hits: 0, queriedIsbns: candidates, error: String(e) }
   }
 
-  return {
-    ncid: null,
-    hits: 0,
-    queriedIsbn: lastIsbn,
-    error: sawSuccess ? undefined : lastError,
+  try {
+    const parsed = parseCiniiResponse(body)
+    return { ncid: parsed.ncid, hits: parsed.hits, queriedIsbns: candidates }
+  } catch (e) {
+    return { ncid: null, hits: 0, queriedIsbns: candidates, error: `CiNii レスポンス解析失敗: ${e}` }
   }
 }

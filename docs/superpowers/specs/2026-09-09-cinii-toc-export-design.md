@@ -86,20 +86,23 @@
 
 書式:
 
-- 成功: `{exported_at} {book_id} OK   ncid={ncid} isbn={queriedIsbn} hits={hits} entries={n}`（`hits > 1` のときのみ末尾に ` note=複数{hits}件ヒット→先頭採用` を付ける）
-- スキップ: `{exported_at} {book_id} SKIP reason={reason}`（`isbn` / `hits` / `detail` は値がある場合のみ付ける）
+- 成功: `{exported_at} {book_id} OK   ncid={ncid} isbn={queriedIsbns} hits={hits} entries={n}`（`queriedIsbns` はカンマ結合。`hits > 1` のときのみ末尾に ` note=複数{hits}件ヒット→先頭採用` を付ける）
+- スキップ: `{exported_at} {book_id} SKIP reason={reason}`（`isbn` / `hits` / `detail` は値がある場合のみ付ける。`isbn` は `queriedIsbns` のカンマ結合）
 - `OK` の後に半角スペース 2 つを置き、`SKIP` と桁を揃える
 - `detail` は値にスペースを含みうるため必ず行末に置く
+- `no_hit` の行は `hits > 0` を持つことがある。これは CiNii がいずれかの ISBN に該当するレコードを保持しているが、その `@id` を NCID として解析できなかった場合を意味する（§4.3）
 
 ## 4. CiNii Books API 連携
 
 ### 4.1 エンドポイント
 
 ```
-GET https://ci.nii.ac.jp/books/opensearch/search?isbn={isbn}&format=json
+GET https://ci.nii.ac.jp/books/opensearch/search?isbn={isbn1}%20OR%20{isbn2}...&format=json
 ```
 
-既存の Tauri コマンド `http_get`（Rust の reqwest 経由）でフェッチする。ブラウザから直接叩くと CORS で失敗するため、SRU クライアントと同じ方式に揃える。
+CiNii OpenSearch API は `isbn` パラメータに `OR` 区切りで複数 ISBN を渡せる。ISBN候補は1回のリクエストにまとめて照会する（§4.3）。
+
+既存の Tauri コマンド `http_get`（Rust の reqwest 経由）でフェッチする。ブラウザから直接叩くと CORS で失敗するため、SRU クライアントと同じ方式に揃える。`http_get` は第2引数にタイムアウト（秒）を取れる（コミット `2e0bbbd`）。CiNii 照会は 15 秒で切る（§4.3）。
 
 ### 4.2 レスポンスの構造（2026-09-09 実測）
 
@@ -126,15 +129,21 @@ GET https://ci.nii.ac.jp/books/opensearch/search?isbn={isbn}&format=json
 
 NCID は `@graph[0].items[0]["@id"]` の末尾パスセグメントから取り出す（`https://ci.nii.ac.jp/ncid/BB08395220` → `BB08395220`）。`rdfs:seeAlso` は `.json` 拡張子が付くため使わない。
 
-### 4.3 ISBN の正規化と候補順
+### 4.3 ISBN の正規化と単一 OR クエリ
 
 `SruMetadata.isbn` は MARC 020 由来で、ハイフンや `(pbk)` のような付記を含みうる。`src/ai/sru-client.ts` の既存関数 `cleanIsbn`（現在は非公開）を `export` して再利用する。重複実装は作らない。
 
-正規化後、`/^[0-9]{9}[0-9X]$/`（ISBN-10）または `/^[0-9]{13}$/`（ISBN-13）に一致するものだけを照会候補とする。
+正規化後、`/^[0-9]{9}[0-9X]$/`（ISBN-10）または `/^[0-9]{13}$/`（ISBN-13）に一致するものだけを照会候補とする（重複は除去）。有効な候補が 1 つもなければ `httpGet` を呼ばず `no_isbn` とする。
 
-候補を配列の先頭から順に照会し、**最初に 1 件以上ヒットしたものを採用**して即座に返す。全候補が 0 件だった場合は `no_hit`、有効な候補が 1 つもなかった場合は `no_isbn` とする。
+候補は先頭から順に照会するのではなく、**`isbn=` パラメータに `OR` 区切りで全て渡して 1 リクエストで照会する**。これにより最悪ケースのリクエスト数が N 回から 1 回に減り、ハングしたリクエストが N 回分のタイムアウトを待つ事態も 1 回分に収まる。タイムアウトは 15 秒（`TIMEOUT_SECS`）に設定する。1 リクエストしか発行しないため、既存の `http_get` デフォルト（30 秒、コミット `2e0bbbd`）より短く切ってよい。
 
-通信エラーは即座に打ち切らず次の候補を試す。全候補が失敗し、かつ 1 件以上で通信エラーが発生していた場合のみ `api_error` とする。通信は成功して 0 件だっただけの場合は `no_hit` を優先する（`api_error` としない）。
+この設計が成立するのは、`SruMetadata.isbn` が MARC **020 $a のみ**（`src/ai/sru-client.ts:191` の `getSubfields('020', 'a')`。`$z`＝廃番ISBNは含まない）から来ているため。つまり候補群は常に**同一資源の ISBN** であり、どの候補がヒットしても等価に採用してよい。
+
+CiNii の返却順は問い合わせ順と一致しない（実測: `9784167137113 OR 9784101132150` で問い合わせても `9784101132150` の記録が先頭で返る）。この事実は候補順に意味があれば問題になるが、上記の理由（全候補が同一資源）により候補順自体に優先度はなく、`items[0]` を採用する判断は従来のロジック（先頭ヒットを採用）と同様に妥当である。
+
+どの候補がヒットしたかを `dcterms:hasPart`（`urn:isbn:...`）と文字列比較して特定することは行わない。実測では 13 桁 ISBN で照会しても `hasPart` が 10 桁形式で返る場合があり、フォームが異なると単純な文字列一致では判定できず、ISBN-10↔13 変換（チェックディジット計算含む）が必要になる。ログの 1 フィールドのためにその実装コストを払う価値はないため、`queriedIsbns` には「照会した ISBN 群」を記録するのみとし、「どれがヒットしたか」は追跡しない。
+
+通信エラー・レスポンス解析失敗はいずれも `api_error` とする（1 リクエストしかないため、成功/失敗の混在は起こらない）。
 
 ### 4.4 インターフェース
 
@@ -144,15 +153,11 @@ NCID は `@graph[0].items[0]["@id"]` の末尾パスセグメントから取り�
 export interface CiniiLookup {
   /** 採用した NCID。見つからなければ null */
   ncid: string | null
-  /** 採用した候補の totalResults。照会に至らなかった場合は 0 */
+  /** ISBN群のいずれかに該当した CiNii レコード件数。照会に至らなかった場合は 0 */
   hits: number
-  /**
-   * 照会した正規化済み ISBN。
-   * ヒットした場合は採用した候補、ヒットしなかった場合は最後に照会した候補。
-   * 有効候補が 1 つもなければ null
-   */
-  queriedIsbn: string | null
-  /** 通信・パース失敗時のみ設定 */
+  /** 実際に照会した正規化済み ISBN の一覧。有効候補がなければ空配列 */
+  queriedIsbns: string[]
+  /** 通信・解析失敗時のみ設定 */
   error?: string
 }
 
@@ -246,11 +251,11 @@ appendOutputText: (file: string, text: string, outputDir?: string) =>
   → pipeline.readStage<ReviewedEntry[]>(bookId, 'review')
       ├ 失敗 or 0件 → SKIP reason=not_reviewed → ログ追記 → 終了
       └ 成功 → 確定エントリを取得
-  → lookupCiniiNcid(sruMeta.isbn)
-      ├ 有効候補なし        → SKIP reason=no_isbn    → ログ追記 → 終了
-      ├ 全候補0件           → SKIP reason=no_hit     → ログ追記 → 終了
-      ├ 全候補通信失敗      → SKIP reason=api_error  → ログ追記 → 終了
-      └ ヒット（hits >= 1） → NCID 採用（hits > 1 なら先頭）
+  → lookupCiniiNcid(sruMeta.isbn)  ※候補群を OR で1リクエストにまとめて照会
+      ├ 有効候補なし          → SKIP reason=no_isbn    → ログ追記 → 終了
+      ├ 0件（ncid取得不可）   → SKIP reason=no_hit     → ログ追記 → 終了
+      ├ 通信・解析失敗        → SKIP reason=api_error  → ログ追記 → 終了
+      └ ヒット（ncid 取得）   → NCID 採用（hits > 1 なら先頭）
   → CiniiBookRecord を組み立て（toc は5項目に絞る）
   → pipeline.upsertOutputRecords('cinii_books.jsonl', bookId, [record], outputDir)
   → ログ追記（OK 行）
@@ -272,7 +277,7 @@ export interface CiniiExportResult {
   detail?: string
   ncid?: string
   hits?: number
-  queriedIsbn?: string
+  queriedIsbns?: string[]
   entryCount?: number
   /** ログファイルの絶対パス */
   logPath?: string
@@ -340,8 +345,8 @@ ReviewView は承認済み（status = `exported`）の書籍を開き直すと `
 |---|---|---|---|
 | `not_reviewed` | `review.json` が読めない、またはエントリが 0 件 | 出力しない | 記録する |
 | `no_isbn` | `SruMetadata.isbn` に ISBN-10/13 の形式に合う値が 1 つもない | 出力しない | 記録する |
-| `no_hit` | 全候補で `opensearch:totalResults` が 0 | 出力しない | 記録する |
-| `api_error` | 全候補で `http_get` または JSON パースが失敗 | 出力しない | 記録する |
+| `no_hit` | NCID を取得できない（`opensearch:totalResults` が 0、または `hits > 0` だが `@id` を解析できない） | 出力しない | 記録する |
+| `api_error` | 単一リクエストの `http_get` または JSON パースが失敗 | 出力しない | 記録する |
 
 いずれの場合も例外を投げず `CiniiExportResult` を返す。ログ書き込み自体が失敗した場合のみ例外を呼び出し元に伝播させ、ReviewView は `CiNii出力エラー: {e}` を表示する。
 
@@ -362,6 +367,11 @@ ReviewView は承認済み（status = `exported`）の書籍を開き直すと `
 
 - **D5: ログはプレーンテキスト**（構造化 JSONL ではない）
   照会結果の確認は人間が目視で行う作業であり、`grep` で突合できるテキストのほうが扱いやすい。機械集計の要件は現時点で存在しない。
+
+- **D6: ISBN 候補群は逐次照会せず、`OR` で 1 リクエストにまとめる**（2026-09-09、コミット2）
+  `SruMetadata.isbn` は MARC **020 $a のみ**（`$z`＝廃番ISBNを含まない）から来ており、候補群は常に同一資源の ISBN である。そのため「どの候補がヒットしたか」に優先度の意味はなく、1 リクエストに OR でまとめて `items[0]` を採用してよい。これにより最悪ケースのリクエスト数が N 回から 1 回に減り、ハングしたリクエストの待ち時間も 1 回分のタイムアウトに収まる。
+  返却順は API 依存で問い合わせ順と一致しないことを実測で確認したが（`9784167137113 OR 9784101132150` の問い合わせで `9784101132150` の記録が先頭に来た）、上記の理由により問題にならない。
+  どの候補がヒットしたかを `dcterms:hasPart`（`urn:isbn:...`）と文字列比較して特定する案は採用しなかった。実測で 13 桁 ISBN を照会しても `hasPart` が 10 桁形式で返るケースがあり、フォームが異なると文字列一致が失敗する。正しく判定するには ISBN-10↔13 変換（チェックディジット計算）が必要になり、ログの 1 フィールドのために実装するコストに見合わない。
 
 ## 10. テスト計画
 

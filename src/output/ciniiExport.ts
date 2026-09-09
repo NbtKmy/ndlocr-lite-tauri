@@ -23,7 +23,7 @@ export interface CiniiExportResult {
   detail?: string
   ncid?: string
   hits?: number
-  queriedIsbn?: string
+  queriedIsbns?: string[]
   entryCount?: number
   /** ログファイルの絶対パス */
   logPath?: string
@@ -79,7 +79,7 @@ export function formatLogLine(r: CiniiExportResult, bookId: string): string {
   if (r.status === 'ok') {
     parts.push('OK  ')
     parts.push(`ncid=${r.ncid}`)
-    parts.push(`isbn=${r.queriedIsbn}`)
+    parts.push(`isbn=${r.queriedIsbns?.join(',')}`)
     parts.push(`hits=${r.hits}`)
     parts.push(`entries=${r.entryCount}`)
     if ((r.hits ?? 0) > 1) {
@@ -88,7 +88,7 @@ export function formatLogLine(r: CiniiExportResult, bookId: string): string {
   } else {
     parts.push('SKIP')
     parts.push(`reason=${r.reason}`)
-    if (r.queriedIsbn) parts.push(`isbn=${r.queriedIsbn}`)
+    if (r.queriedIsbns?.length) parts.push(`isbn=${r.queriedIsbns.join(',')}`)
     if (r.hits !== undefined) parts.push(`hits=${r.hits}`)
     // detail は値にスペースを含みうるため必ず行末に置く
     if (r.detail) parts.push(`detail=${oneLine(r.detail)}`)
@@ -133,15 +133,15 @@ export async function exportCiniiBook(
   const lookup = await lookupCiniiNcid(sruMeta.isbn)
   if (lookup.error) {
     return skip('api_error', {
-      queriedIsbn: lookup.queriedIsbn ?? undefined,
+      queriedIsbns: lookup.queriedIsbns,
       detail: lookup.error,
     })
   }
-  if (lookup.queriedIsbn === null) {
+  if (lookup.queriedIsbns.length === 0) {
     return skip('no_isbn')
   }
   if (!lookup.ncid) {
-    return skip('no_hit', { queriedIsbn: lookup.queriedIsbn, hits: lookup.hits })
+    return skip('no_hit', { queriedIsbns: lookup.queriedIsbns, hits: lookup.hits })
   }
 
   // ③ レコード組立と書き込み
@@ -161,7 +161,7 @@ export async function exportCiniiBook(
     exportedAt,
     ncid: lookup.ncid,
     hits: lookup.hits,
-    queriedIsbn: lookup.queriedIsbn,
+    queriedIsbns: lookup.queriedIsbns,
     entryCount: entries.length,
   }
   result.logPath = await pipeline.appendOutputText(LOG_FILE, formatLogLine(result, bookId), dir)
