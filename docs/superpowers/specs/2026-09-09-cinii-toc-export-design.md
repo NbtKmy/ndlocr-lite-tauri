@@ -261,6 +261,9 @@ appendOutputText: (file: string, text: string, outputDir?: string) =>
   → CiniiBookRecord を組み立て（toc は5項目に絞る）
   → pipeline.upsertOutputRecords('cinii_books.jsonl', bookId, [record], outputDir)
   → ログ追記（OK 行）
+      ├ 成功 → logPath / jsonlPath を設定
+      └ 失敗 → レコードは書き込み済みのため例外を伝播させず、
+               status は 'ok' のまま logWriteError に詳細を残す（logPath / jsonlPath は未設定）
   → UI にメッセージ表示
 ```
 
@@ -285,6 +288,8 @@ export interface CiniiExportResult {
   logPath?: string
   /** 書き込んだ cinii_books.jsonl の絶対パス。成功時のみ設定 */
   jsonlPath?: string
+  /** レコードは出力できたがログ書き込みが失敗した場合のみ設定 */
+  logWriteError?: string
   exportedAt: string
 }
 
@@ -317,10 +322,12 @@ ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` �
 
 表示条件は `phase === 'review'` と `phase === 'done'` の両方だが、**両者は描画箇所が異なる**。`phase === 'done'` は `src/views/ReviewView.tsx:313-334` で早期リターンし `.review-done` 画面を返すため、ヘッダーを描画しない。したがって:
 
-- `phase === 'review'` → `.review-header-actions` 内、`PDF出力` ボタンの隣。メッセージは既存の `pdfMessage` と同じ形で `.progress-text` の `<span>` として表示
+- `phase === 'review'` → ボタンは `.review-header-actions` 内、`PDF出力` ボタンの隣。メッセージは `pdfMessage` / `progress` と同じ `.progress-text` の `<span>` として、ヘッダー本体とは別の `.review-message-row`（`.review-header` の直後に続く独立した行）に表示する（後述）
 - `phase === 'done'` → `.review-done` 画面 2 種（`embedFailed` 時の「⚠️ 埋め込みなしで出力済み」と通常の「✅ 承認完了」）それぞれの `.review-done-actions` 内。メッセージは `.progress-text` の `<p>` として表示。通常の承認完了画面は現在 `.review-done-actions` のラッパーを持たないため追加する
 
 ボタンの JSX は早期リターンより前に変数として組み立て、3 箇所から参照して重複を避ける。
+
+**メッセージ行の分離（review フェーズ）:** CiNii 成功メッセージは絶対パスを含み最大139文字になる。`.review-header-actions` は `min-width: 0` を持たないためこれ以上縮まず、`.review-title` が先に潰れてからヘッダーが横に溢れ、承認ボタンが押し出される。この事象は既存の `pdfMessage`（106文字）でも既に発生していた。そのため `pdfMessage` / `ciniiMessage` / `progress`（review フェーズ用途分のみ）を `.review-header-actions` から取り出し、ヘッダー直下の `.review-message-row` に独立させた。`save-status` はボタン群と同じ行に残す（6文字と短く操作の一部として扱えるため）。
 
 メッセージ文言:
 
@@ -328,6 +335,7 @@ ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` �
 |---|---|
 | `ok`（`hits === 1`） | `CiNii JSON出力しました: {jsonlPath}（承認時の確定データ {entryCount}件 / ncid={ncid}）` |
 | `ok`（`hits > 1`） | 上記に加えて末尾に `（{hits}件ヒット→先頭採用）` |
+| `ok`（ログ書き込み失敗） | `cinii_books.jsonl にレコードを出力しましたが、ログ書き込みに失敗しました: {logWriteError}` |
 | `not_reviewed` | `未承認です。「承認 → 出力」を実行してから押してください` |
 | `no_isbn` | `ISBNがないためCiNii照会できません（ログ記録: {logPath}）` |
 | `no_hit` | `CiNii IDが見つかりませんでした。JSONには出力していません（ログ記録: {logPath}）` |
@@ -350,7 +358,7 @@ ReviewView は承認済み（status = `exported`）の書籍を開き直すと `
 | `no_hit` | NCID を取得できない（`opensearch:totalResults` が 0、または `hits > 0` だが `@id` を解析できない） | 出力しない | 記録する |
 | `api_error` | 単一リクエストの `http_get` または JSON パースが失敗 | 出力しない | 記録する |
 
-いずれの場合も例外を投げず `CiniiExportResult` を返す。ログ書き込み自体が失敗した場合のみ例外を呼び出し元に伝播させ、ReviewView は `CiNii出力エラー: {e}` を表示する。
+いずれの場合も例外を投げず `CiniiExportResult` を返す。ログ書き込み自体が失敗した場合、スキップパス（`skip()`）では何も書き込まれていないため例外を呼び出し元に伝播させ、ReviewView は `CiNii出力エラー: {e}` を表示する。一方、成功パスは `cinii_books.jsonl` へのレコード書き込みが既に完了しているため、ログ書き込み失敗を例外として伝播させると「何も出力されなかった」と誤解させてしまう。そこで成功パスに限り例外を握り、`status: 'ok'` のまま `logWriteError` に詳細を残す（`logPath` / `jsonlPath` は未設定）。ReviewView はこれを検出し、レコードは書けたがログ書き込みには失敗した旨を明示するメッセージを表示する。
 
 ## 9. 決定事項
 

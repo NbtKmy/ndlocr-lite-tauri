@@ -346,6 +346,11 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     </button>
   )
 
+  // 出力先の絶対パスを含む長文がヘッダーの操作行を押し出すため、メッセージ行を分離して表示する
+  const showPdfMessage = phase === 'review' && !!pdfMessage
+  const showCiniiMessage = phase === 'review' && !!ciniiMessage
+  const showProgress = (phase === 'approving' || phase === 'structuring') && !!progress
+
   if (phase === 'loading') {
     return <div className="review-loading">読み込み中…</div>
   }
@@ -467,17 +472,17 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
               {saveStatus === 'saving' ? '保存中…' : saveStatus === 'unsaved' ? '未保存' : '✓ 保存済み'}
             </span>
           )}
-          {phase === 'review' && pdfMessage && (
-            <span className="progress-text">{pdfMessage}</span>
-          )}
-          {phase === 'review' && ciniiMessage && (
-            <span className="progress-text">{ciniiMessage}</span>
-          )}
-          {(phase === 'approving' || phase === 'structuring') && (
-            <span className="progress-text">{progress}</span>
-          )}
         </div>
       </div>
+
+      {/* メッセージ行: 出力先の絶対パスを含む長文がヘッダーの操作行を押し出すため独立させる */}
+      {(showPdfMessage || showCiniiMessage || showProgress) && (
+        <div className="review-message-row">
+          {showPdfMessage && <span className="progress-text">{pdfMessage}</span>}
+          {showCiniiMessage && <span className="progress-text">{ciniiMessage}</span>}
+          {showProgress && <span className="progress-text">{progress}</span>}
+        </div>
+      )}
 
       {/* メインコンテンツ */}
       <div className="review-body">
