@@ -292,6 +292,11 @@ npm run mcp-server
 
 ## 変更履歴
 
+### v0.17.0（2026-09-09）
+
+- feat: CiNii Books ID 付き目次JSONL出力を追加。ISBN から CiNii Books OpenSearch API で NCID を解決し、タイトル・出版年・ISBN・NCID と目次データを1書籍1行にまとめた `cinii_books.jsonl` を出力（埋め込みなし）。ReviewViewに「CiNii JSON出力」ボタンを追加
+- feat: CiNii 照会の結果を `cinii_export.log` に記録。JSONレコードの `exported_at` とログ行のタイムスタンプが同一値になり突合できる。NCID が取得できなかった書籍はJSONには出力せずログにのみ残す
+
 ### v0.16.0（2026-08-20）
 
 - feat: 目次PDF出力機能を追加。目次見出し・著者名を1書籍1PDF（ファイル名はMMS ID）で出力。ReviewViewに「PDF出力」ボタンを追加

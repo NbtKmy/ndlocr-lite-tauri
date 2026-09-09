@@ -100,7 +100,8 @@ ndlocr-lite-web-ai/
 │   │   ├── mcp-connector.ts       # MCP Serverコネクタ（Streamable HTTP）
 │   │   ├── sru-client.ts          # ISBN→SRU→MARC-XMLパース（880リンク解決・856選別・AVA所蔵）
 │   │   ├── toc-structuring.ts     # ローカルLLMによる目次OCR構造化（非TOCページ事前除外）
-│   │   └── embeddings.ts          # bge-m3 埋め込み（書籍レベル + チャンクレベル）
+│   │   ├── embeddings.ts          # bge-m3 埋め込み（書籍レベル + チャンクレベル）
+│   │   └── cinii-client.ts        # ISBN→CiNii Books OpenSearch→NCID解決
 │   ├── components/
 │   │   ├── layout/
 │   │   │   ├── SplitView.tsx      # リサイズ可能な左右分割パネル
@@ -125,7 +126,8 @@ ndlocr-lite-web-ai/
 │   │   └── types.ts               # BookManifest / TocEntry / OutputBook 等の型定義
 │   ├── output/
 │   │   ├── writer.ts              # JSONL出力（books.jsonl / entries.jsonl）
-│   │   └── tocPdf.ts              # 目次PDF出力（1書籍1PDF、pdf-lib + IPAexゴシック）
+│   │   ├── tocPdf.ts              # 目次PDF出力（1書籍1PDF、pdf-lib + IPAexゴシック）
+│   │   └── ciniiExport.ts         # CiNii ID付き目次JSONL出力（埋め込みなし）+ 照会ログ
 │   ├── views/
 │   │   ├── InboxView.tsx          # 書籍キュー（ISBN入力・CSV一括・SRU解決ログ・処理状態管理）
 │   │   ├── ReviewView.tsx         # human-in-the-loop レビュー（PDF表示・エントリ編集・自動保存・出力確認）
@@ -187,6 +189,7 @@ ISBN入力（単体 / CSV一括）
   → 埋め込み（bge-m3: チャンクレベル + 書籍レベル）
   → JSONL出力（books.jsonl + entries.jsonl、出力先設定可）
   → 目次PDF出力（任意・手動: ReviewViewの「PDF出力」ボタン、1書籍1PDF、ファイル名はMMS ID）
+  → CiNii JSON出力（任意・手動: ReviewViewの「CiNii JSON出力」ボタン、対象は review.json のみ）
 
 データパス（macOS）:
   ~/Library/Application Support/com.nobu.ndltococr/data/
@@ -194,6 +197,8 @@ ISBN入力（単体 / CSV一括）
     work/{mmsId}/  # manifest.json / ocr.json / draft.json / sru_meta.json / review.json
     output/    # books.jsonl / entries.jsonl（設定で変更可）
       toc_pdf/{mmsId}.pdf  # 目次PDF（見出し・著者名、ページ番号なし）
+      cinii_books.jsonl    # CiNii ID付き目次JSONL（埋め込みなし、1書籍1行）
+      cinii_export.log     # CiNii照会・出力ログ（exported_at で JSONL と突合）
     done/      # 処理済みPDF（将来用）
 ```
 
@@ -234,6 +239,7 @@ ISBN入力（単体 / CSV一括）
 - [x] JSONL出力（books.jsonl / entries.jsonl）・出力先設定（フォルダ選択）・再出力対応
 - [x] MARC 880リンク解決バグ修正（/Jpanスクリプトコード除去）
 - [x] 目次PDF出力（pdf-lib + IPAexゴシック、1書籍1PDF、ReviewViewから手動生成）
+- [x] CiNii Books ID 付き目次JSONL出力（埋め込みなし、`cinii_books.jsonl` + `cinii_export.log`、ReviewViewから手動生成）
 - [ ] LLMプロンプト品質改善（qwen2.5系での構造化精度、保留中）
 
 ## UI設計仕様

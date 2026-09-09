@@ -11,11 +11,16 @@ data/output/
   books.jsonl   … 1行1書籍
   entries.jsonl … 1行1目次エントリ（pgvector想定）
   toc_pdf/{book_id}.pdf … 目次PDF（1書籍1ファイル、任意生成。DB取り込み対象外）
+  cinii_books.jsonl … 1行1書籍。CiNii Books ID付き・埋め込みなし（任意生成。DB取り込み対象外）
+  cinii_export.log  … CiNii照会・出力ログ（任意生成。DB取り込み対象外）
 ```
 
 `toc_pdf/{book_id}.pdf` はDB投入用JSONLとは独立した補助出力（ReviewViewから手動生成）。
 見出し（階層インデント）と各節の著者名（`contributor`、ある場合のみ）を1書籍1PDFにまとめたもので、
 ページ番号は含まない。books.jsonl / entries.jsonl のスキーマには影響しない。
+
+`cinii_books.jsonl` / `cinii_export.log` も同様に独立した補助出力（ReviewViewから手動生成）。
+埋め込みを含まない軽量な受け渡し用データで、books.jsonl / entries.jsonl のスキーマには影響しない。
 
 ## books.jsonl
 
@@ -73,6 +78,44 @@ SRU（MARC-XML）由来の書誌・所蔵メタデータを含む。`OutputBook`
   "embedding": [/* 1024 floats, 省略可 */]  // bge-m3 埋め込み。埋め込み失敗時は欠損
 }
 ```
+
+## cinii_books.jsonl（補助出力・DB取り込み対象外）
+
+埋め込みを含まない軽量な受け渡し用データ。1行1書籍で、目次データを `toc` に入れ子で持つ。
+`CiniiBookRecord`（`src/pipeline/types.ts`）と一致。`book_id` をキーに upsert されるため、
+再出力しても行は重複しない。
+
+```jsonc
+{
+  "book_id": "991234567890",          // MMS ID（upsertキー）
+  "cinii_ncid": "BB08395220",         // CiNii Books ID
+  "title": "夕陽カ丘三号館",           // SRU: titleOriginal ?? titleRomanized
+  "pub_year": "2012",
+  "isbn": ["9784167137113"],          // SRU由来の生値（ハイフン等を含む場合あり）
+  "exported_at": "2026-09-09T20:52:26+09:00",  // cinii_export.log の行頭と同一値
+  "toc": [
+    { "seq": 1, "level": 1, "heading_text": "第一章 転居", "page_number": 5, "contributor": null }
+  ]
+}
+```
+
+出力対象は承認時に確定した `work/{mmsId}/review.json` のみ。CiNii Books ID が取得できなかった
+書籍（ISBNなし・ヒット0件・API失敗）はこのファイルに出力されず、`cinii_export.log` にのみ記録される。
+
+## cinii_export.log（補助出力・DB取り込み対象外）
+
+1イベント1行のプレーンテキスト。行頭のタイムスタンプは同じ出力処理で書かれた
+`cinii_books.jsonl` レコードの `exported_at` と同一値であり、これで両者を突合する。
+
+```
+2026-09-09T20:52:26+09:00 991234567890 OK   ncid=BB08395220 isbn=9784167137113 hits=1 entries=42
+2026-09-09T20:53:01+09:00 991235000000 SKIP reason=no_hit isbn=9784100000000 hits=0
+2026-09-09T20:53:44+09:00 991236000000 OK   ncid=BA12345678 isbn=9784200000000 hits=3 entries=18 note=複数3件ヒット→先頭採用
+```
+
+`reason` は `not_reviewed`（未承認）/ `no_isbn`（有効なISBNなし）/ `no_hit`（CiNiiにヒット0件）/
+`api_error`（通信・解析失敗）のいずれか。`detail` は値にスペースを含みうるため必ず行末に置かれる。
+また `detail` に含まれる改行（CR/LF）は空白に畳まれるため、1イベントが複数行に分かれることはない。
 
 ## 注意事項（DB取り込み時）
 
