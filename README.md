@@ -292,6 +292,13 @@ npm run mcp-server
 
 ## 変更履歴
 
+### v0.18.1（2026-09-10）
+
+- fix: GitHub Actions の Windows ビルドが `actions/checkout` で失敗する問題を修正。グロブパターンがそのままディレクトリ名として作られた `src/**/CLAUDE.md` がコミットされており、Windows は `*` をパス名に使えないため checkout が `invalid path` で異常終了していた。当該ファイルを削除し、再発防止として `.gitignore` に `src/\*\*/` を追加
+- fix: GitHub Actions の Linux ビルドがリリース作成時に `Resource not accessible by integration` で失敗する問題を修正。ワークフローに `permissions` の指定がなく `GITHUB_TOKEN` が読み取り専用だったため、`build` ジョブに `contents: write` を追加
+- chore: `actions/checkout` と `actions/setup-node` を v5 に、CI の Node.js を 22 に更新（Node.js 20 の非推奨化に対応。ビルド失敗の原因ではなく予防的な更新）
+- chore: `package-lock.json` のバージョン欄が v0.15.1 のまま取り残されていたのを現行バージョンに同期（依存関係の解決結果は変更なし）
+
 ### v0.18.0（2026-09-10）
 
 - feat: InboxView の書籍一覧に CiNii JSON一括出力機能を追加。承認済み・出力済み（`approved` / `exported` / `exported_no_embed`）の書籍にチェックボックスが表示され、複数選択して「選択をCiNii JSON一括出力」ボタンで1つのJSON配列ファイル（`cinii_batch_YYYYMMDD-HHmmss.json`）にまとめて出力できる

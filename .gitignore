@@ -29,3 +29,7 @@ dist-ssr
 
 build-macos.sh
 public/wasm/
+
+# グロブパターンがそのままディレクトリ名として作られてしまった事故を防ぐ。
+# Windows では `*` をパス名に使えないため、コミットすると checkout が失敗する。
+src/\*\*/
