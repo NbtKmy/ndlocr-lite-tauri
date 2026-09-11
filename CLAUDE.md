@@ -127,12 +127,13 @@ ndlocr-lite-web-ai/
 │   │   ├── api.ts                 # Tauri invoke ラッパー（型付け・エラー変換）
 │   │   └── types.ts               # BookManifest / TocEntry / OutputBook 等の型定義
 │   ├── output/
-│   │   ├── writer.ts              # JSONL出力（books.jsonl / entries.jsonl）
+│   │   ├── writer.ts              # JSONL出力（books.jsonl / entries.jsonl、book_id/entry.idキーでupsert）
 │   │   ├── tocPdf.ts              # 目次PDF出力（1書籍1PDF、pdf-lib + IPAexゴシック）
 │   │   ├── ciniiExport.ts         # CiNii ID付き目次JSONL出力（単体、埋め込みなし）+ 照会ログ。レコード組立・出力先解決を一括出力と共有
-│   │   └── ciniiBatchExport.ts    # CiNii ID付き目次JSON一括出力（複数書籍→1つのJSON配列、既知NCIDはcinii_books.jsonlから再利用）
+│   │   ├── ciniiBatchExport.ts    # CiNii ID付き目次JSON一括出力（複数書籍→1つのJSON配列、既知NCIDはcinii_books.jsonlから再利用）
+│   │   └── jsonlBatchExport.ts    # JSONL一括再出力（埋め込み付き、複数書籍→books.jsonl/entries.jsonlをupsert、逐次処理・書籍間で中断可能・ログなし）
 │   ├── views/
-│   │   ├── InboxView.tsx          # 書籍キュー（ISBN入力・CSV一括・SRU解決ログ・処理状態管理・CiNii JSON一括出力）
+│   │   ├── InboxView.tsx          # 書籍キュー（ISBN入力・CSV一括・SRU解決ログ・処理状態管理・CiNii JSON一括出力・JSONL一括再出力）
 │   │   ├── ReviewView.tsx         # human-in-the-loop レビュー（PDF表示・エントリ編集・自動保存・出力確認）
 │   │   └── EntryEditor.tsx        # 目次エントリ編集（テーブル/Markdown切替・ページフィルタ・キーボード操作）
 │   ├── utils/
@@ -187,12 +188,26 @@ ISBN入力（単体 / CSV一括）
   → ReviewView（human-in-the-loop）
     - PDF画像: scale=2.0フル解像度, imageDataToDataUrl（サムネイル不使用）
     - エントリ編集: ページフィルタ / Enter→次行 / Escape→キャンセル / OCR原文表示
-    - 自動保存: entries変更から1.5秒後にdraft.jsonへデバウンス保存
+    - 自動保存: entries変更から1.5秒後にdraft.jsonへデバウンス保存。出力済み（exported/exported_no_embed）の
+      書籍を開き直して編集した場合は review.json にも同時保存（reviewed: true を付与）し、CiNii出力・一括出力が
+      常に最新の内容を読めるようにする。この場合ヘッダーに「JSONL未再出力」バッジを表示（entries.jsonl / books.jsonl
+      は再出力するまで前回時点の内容のまま。埋め込みの自動再計算はコストが高いため行わない）。
+      自動保存・バッジの対象はEntryEditor経由の人的編集のみ（userEditedRefで判定）。書籍を開いた直後の
+      初回描画では発火しない
+    - 出力済みの書籍を開いた場合、review.json を優先して読み込む（無ければ draft.json にフォールバック）
     - 承認時: 出力先確認ダイアログ（フォルダ選択可）
   → 埋め込み（bge-m3: チャンクレベル + 書籍レベル）
-  → JSONL出力（books.jsonl + entries.jsonl、出力先設定可）
-  → 目次PDF出力（任意・手動: ReviewViewの「PDF出力」ボタン、1書籍1PDF、ファイル名はMMS ID）
-  → CiNii JSON出力（任意・手動: ReviewViewの「CiNii JSON出力」ボタン、対象は review.json のみ）
+  → JSONL出力（books.jsonl + entries.jsonl、出力先設定可。book_id / entry.id をキーに upsert するため
+    再承認しても行が重複しない）
+  → JSONL再出力（任意・手動: 1冊単位はReviewViewの「JSONL再出力（埋め込み付き）」ボタン、出力済みの書籍を編集後に
+    承認フローを経ずbooks.jsonl/entries.jsonlへ反映。review/done画面から実行可能。複数冊まとめてはInboxViewで
+    承認済み/出力済み書籍を複数選択→「選択をJSONL一括再出力（埋め込み付き）」ボタン。Ollama埋め込みがボトルネックの
+    ため書籍は並列処理せず1冊ずつ逐次処理し、「中断」ボタンで書籍と書籍の間だけ安全に停止できる。埋め込み失敗は
+    致命的にせずその書籍のみexported_no_embedにして続行する。upsertのため繰り返し実行しても重複しない。
+    ログファイルは書かず、結果パネル表示のみ）
+  → 目次PDF出力（任意・手動: ReviewViewの「PDF出力」ボタン、1書籍1PDF、ファイル名はMMS ID。承認前後どちらの画面からも実行可能）
+  → CiNii JSON出力（任意・手動: ReviewViewの「CiNii JSON出力」ボタン、対象は review.json のみ。toc[].seqは
+    削除による欠番を詰め直した1始まりの表示用連番で、内部のseq/idキーとは独立）
   → CiNii JSON一括出力（任意・手動: InboxViewで承認済み/出力済み書籍を複数選択 →「選択をCiNii JSON一括出力」ボタン、
     1つのJSON配列ファイルにまとめて出力。既知NCIDはcinii_books.jsonlから再利用しCiNii照会をスキップ）
 
@@ -242,11 +257,13 @@ ISBN入力（単体 / CSV一括）
 - [x] ReviewView: フル解像度PDF表示（scale=2.0）・ページフィルタ・自動保存・出力確認ダイアログ
 - [x] EntryEditor: テーブル/Markdown切替・ページ別フィルタ・Enter/Esc操作・OCR原文対比
 - [x] 書籍レベル埋め込み（bge-m3, title+subjects）+ チャンクレベル埋め込み（親見出し前置）
-- [x] JSONL出力（books.jsonl / entries.jsonl）・出力先設定（フォルダ選択）・再出力対応
+- [x] JSONL出力（books.jsonl / entries.jsonl）・出力先設定（フォルダ選択）・upsertによる再出力対応（book_id/entry.idキーで重複しない）
 - [x] MARC 880リンク解決バグ修正（/Jpanスクリプトコード除去）
-- [x] 目次PDF出力（pdf-lib + IPAexゴシック、1書籍1PDF、ReviewViewから手動生成）
-- [x] CiNii Books ID 付き目次JSONL出力（埋め込みなし、`cinii_books.jsonl` + `cinii_export.log`、ReviewViewから手動生成）
+- [x] 目次PDF出力（pdf-lib + IPAexゴシック、1書籍1PDF、ReviewViewの承認前後どちらの画面からも手動生成可能）
+- [x] CiNii Books ID 付き目次JSONL出力（埋め込みなし、`cinii_books.jsonl` + `cinii_export.log`、ReviewViewから手動生成。toc[].seqは1始まりの表示用連番）
 - [x] CiNii JSON一括出力（InboxViewで複数書籍選択 → 1つのJSON配列ファイル、既知NCIDはcinii_books.jsonlから再利用）
+- [x] 出力済み書籍の再編集対応（review.json優先読み込み・編集の自動保存がreview.jsonにも波及・「JSONL未再出力」バッジ・「JSONL再出力（埋め込み付き）」ボタン）
+- [x] JSONL一括再出力（InboxViewで複数書籍選択 → books.jsonl/entries.jsonlを埋め込み付きでupsert。CiNii一括出力と選択セット共有、逐次処理・書籍間中断対応、ログファイルなし）
 - [ ] LLMプロンプト品質改善（qwen2.5系での構造化精度、保留中）
 
 ## UI設計仕様

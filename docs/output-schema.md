@@ -26,6 +26,19 @@ data/output/
 ## books.jsonl
 
 SRU（MARC-XML）由来の書誌・所蔵メタデータを含む。`OutputBook`（`src/pipeline/types.ts`）と一致。
+`book_id` をキーに upsert されるため、承認のやり直しやJSONL再出力を繰り返しても行は重複しない
+（v0.19.0 以前は追記方式で、再承認すると重複行ができていた。既存データに残る重複行は自動修復せず、
+以後の再出力で1行に収束する運用とした）。
+
+`books.jsonl` / `entries.jsonl` は、ReviewViewから1冊単位で再出力できるほか、InboxViewの書籍一覧で
+複数の承認済み・出力済み書籍を選択して一括再出力することもできる（`src/output/jsonlBatchExport.ts`。
+CiNii JSON一括出力とチェックボックス選択を共有）。どちらの経路でも `upsertBookRecord` /
+`upsertEntryRecords` によるキー付きupsertを使うため、同じ書籍を何度再出力しても重複行はできない。
+一括再出力は書籍ごとに以下の理由でスキップされ得る: `not_reviewed`（`review.json` が無い・空・
+配列でない）/ `no_meta`（`sru_meta.json` が読めない）/ `no_ocr`（`ocr.json` が読めない。ページ数の
+算出に必要なため）/ `error`（上記以外の想定外の失敗。JSONLへの書き込み失敗など。詳細は結果パネルに
+併記される）。埋め込み計算（Ollama）に失敗した書籍は処理を止めず、その書籍だけ
+`exported_no_embed` として埋め込みなしでレコードを書き込む。
 
 ```json
 {
@@ -60,7 +73,8 @@ SRU（MARC-XML）由来の書誌・所蔵メタデータを含む。`OutputBook`
 
 ## entries.jsonl
 
-`OutputEntry`（`src/pipeline/types.ts`）と一致。
+`OutputEntry`（`src/pipeline/types.ts`）と一致。`id`（`book_id:seq`）をキーに upsert されるため、
+承認のやり直しやJSONL再出力を繰り返しても行は重複しない（books.jsonl と同様、v0.19.0で追記方式から変更）。
 
 ```json
 {
@@ -106,8 +120,15 @@ SRU（MARC-XML）由来の書誌・所蔵メタデータを含む。`OutputBook`
 }
 ```
 
-出力対象は承認時に確定した `work/{mmsId}/review.json` のみ。CiNii Books ID が取得できなかった
-書籍（ISBNなし・ヒット0件・API失敗）はこのファイルに出力されず、`cinii_export.log` にのみ記録される。
+`toc[].seq` は配列順に振り直した **1始まりの表示用連番**であり、`review.json` / `entries.jsonl` 側の
+内部 `seq`（`id` = `${book_id}:${seq}` に使われる永続キー）とは意図的に切り離されている。レビュー画面で
+エントリを削除すると内部 `seq` には欠番ができるが（例: 2,3,6,8。`EntryEditor.remove()` は詰め直しをしない）、
+CiNii出力（単体・一括共通、`buildCiniiRecord()`）では常に 1,2,3,4 のように詰まった連番として出力する。
+
+出力対象は `work/{mmsId}/review.json` の内容。承認時（「承認 → 出力」）に確定するほか、出力済みの書籍を
+ReviewViewで開き直して編集した場合も自動保存のたびに `review.json` が更新されるため、CiNii出力・一括出力は
+常にその時点の最新内容を参照する。CiNii Books ID が取得できなかった書籍（ISBNなし・ヒット0件・API失敗）は
+このファイルに出力されず、`cinii_export.log` にのみ記録される。
 
 ## cinii_batch_YYYYMMDD-HHmmss.json（補助出力・DB取り込み対象外）
 

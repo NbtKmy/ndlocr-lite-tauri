@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import { pipeline } from '../pipeline/api'
 import type { OcrPage, TocEntry, ReviewedEntry } from '../pipeline/types'
 import { structureToc } from '../ai/toc-structuring'
@@ -6,7 +6,7 @@ import { embedEntries, embedBook } from '../ai/embeddings'
 import { loadOllamaConfig } from '../utils/ollamaConfig'
 import { loadOutputConfig, saveOutputConfig } from '../utils/outputConfig'
 import { pickFolder } from '../utils/folderPicker'
-import { writeBookRecord, writeEntryRecords, upsertBookRecord, upsertEntryRecords } from '../output/writer'
+import { upsertBookRecord, upsertEntryRecords } from '../output/writer'
 import { generateTocPdf } from '../output/tocPdf'
 import { exportCiniiBook } from '../output/ciniiExport'
 import { EntryEditor } from './EntryEditor'
@@ -64,9 +64,19 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
   const [pdfMessage, setPdfMessage] = useState<string | null>(null)
   const [ciniiMessage, setCiniiMessage] = useState<string | null>(null)
   const [ciniiBusy, setCiniiBusy] = useState(false)
+  // この書籍が過去に一度でも出力済み（exported / exported_no_embed）だったか。
+  // true の間は編集の自動保存が review.json にも波及し、CiNii/一括出力が常に最新の内容を読めるようにする
+  const [alreadyExported, setAlreadyExported] = useState(false)
+  // alreadyExported な書籍を編集した後、entries.jsonl / books.jsonl の再出力がまだ行われていないか
+  const [jsonlStale, setJsonlStale] = useState(false)
+  // EntryEditor 経由の人的編集があったかを保持する。書籍を開いた直後は entries が
+  // 空→ロード済みに変わるため自動保存 effect が必ず1回発火してしまい、何も直していないのに
+  // review.json を書き直し「JSONL未再出力」バッジも点いてしまう。これを防ぐためのフラグ
+  const userEditedRef = useRef(false)
 
   useEffect(() => {
     async function load() {
+      userEditedRef.current = false
       try {
         const ocr = await pipeline.readStage<OcrPage[]>(bookId, 'ocr')
         setOcrPages(ocr)
@@ -97,22 +107,35 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
           }
         })
 
-        // exported_no_embed の書籍は review.json からエントリを読み込んで再埋め込み画面へ
+        // 出力済み（exported / exported_no_embed）の書籍は review.json を優先して読み込む。
+        // review.json が無い・空・読めない場合のみ draft.json にフォールバックする
         const allBooks = await pipeline.listBooks().catch(() => [] as typeof pipeline extends { listBooks: () => Promise<infer T> } ? T : never[])
         const manifest = (allBooks as Awaited<ReturnType<typeof pipeline.listBooks>>).find(b => b.book_id === bookId)
-        if (manifest?.status === 'exported_no_embed') {
+        if (manifest?.status === 'exported' || manifest?.status === 'exported_no_embed') {
+          setAlreadyExported(true)
+
+          let loadedFromReview = false
           try {
             const reviewed = await pipeline.readStage<ReviewedEntry[]>(bookId, 'review')
-            setEntries(reviewed)
-          } catch {
-            // review.json がなければ draft.json にフォールバック
+            if (Array.isArray(reviewed) && reviewed.length > 0) {
+              setEntries(reviewed)
+              loadedFromReview = true
+            }
+          } catch { /* review.json が読めなければ下で draft.json にフォールバック */ }
+
+          if (!loadedFromReview) {
             try {
               const draft = await pipeline.readStage<TocEntry[]>(bookId, 'draft')
               setEntries(draft.map(e => ({ ...e, reviewed: true, edited: false })))
             } catch { /* ignore */ }
           }
-          setEmbedFailed(true)
-          setPhase('done')
+
+          if (manifest.status === 'exported_no_embed') {
+            setEmbedFailed(true)
+            setPhase('done')
+          } else {
+            setPhase('review')
+          }
           return
         }
 
@@ -131,22 +154,38 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     load()
   }, [bookId])
 
-  // entries が変わるたびにデバウンスして draft.json へ自動保存
+  // entries が変わるたびにデバウンスして draft.json へ自動保存。
+  // alreadyExported（出力済み書籍を開き直して編集している）な場合は review.json にも同じ内容を
+  // 書く。CiNii出力・一括出力・JSONL再出力はいずれも review.json を読むため、これをしないと
+  // 「画面では直したのに出力ファイルには反映されない」状態になってしまう
   useEffect(() => {
     if (phase !== 'review') return
     if (entries.length === 0) return
+    // ロード直後の初回発火では保存しない（人的編集のみを保存・バッジ表示の対象にする）
+    if (!userEditedRef.current) return
     setSaveStatus('unsaved')
     const timer = setTimeout(async () => {
       setSaveStatus('saving')
       try {
         await pipeline.writeStage(bookId, 'draft', entries)
+        if (alreadyExported) {
+          const markedEntries = entries.map(e => ({ ...e, reviewed: true }))
+          await pipeline.writeStage(bookId, 'review', markedEntries)
+          setJsonlStale(true)
+        }
         setSaveStatus('saved')
       } catch {
         setSaveStatus('unsaved')
       }
     }, 1500)
     return () => clearTimeout(timer)
-  }, [entries, bookId, phase])
+  }, [entries, bookId, phase, alreadyExported])
+
+  /** EntryEditor からの編集。人的編集フラグを立ててから state を更新する */
+  const handleEntriesChange = useCallback((next: ReviewedEntry[]) => {
+    userEditedRef.current = true
+    setEntries(next)
+  }, [])
 
   const runStructuring = useCallback(async () => {
     setPhase('structuring')
@@ -287,11 +326,15 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
       setProgress('JSONL 出力中…')
       const now = String(Math.floor(Date.now() / 1000))
       await pipeline.writeStage(bookId, 'review', markedEntries)
-      await writeBookRecord(meta, ocrPages.length, ollamaConfig.model, now, bookEmbedding)
-      await writeEntryRecords(bookId, markedEntries, embedResults)
+      // upsert（book_id / entry.id をキーに置換）にしているため、同じ書籍を再承認しても
+      // books.jsonl / entries.jsonl に行が重複しない
+      await upsertBookRecord(meta, ocrPages.length, ollamaConfig.model, now, bookEmbedding)
+      await upsertEntryRecords(bookId, markedEntries, embedResults)
       const newStatus = embedError ? 'exported_no_embed' : 'exported'
       await pipeline.setStatus(bookId, newStatus)
       setEmbedFailed(embedError)
+      setAlreadyExported(true)
+      setJsonlStale(false)
       setPhase('done')
     } catch (e) {
       setError(`承認エラー: ${e}`)
@@ -299,19 +342,34 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     }
   }, [bookId, entries, ocrPages, sruMeta])
 
-  const retryEmbed = useCallback(async () => {
+  /**
+   * JSONL再出力（埋め込み付き）。「承認 → 出力」を経ずに、review.json の最新内容（承認後の手修正を
+   * 含む）から埋め込みを再計算して books.jsonl / entries.jsonl を上書きするスタンドアロン操作。
+   * 旧 retryEmbed（embedFailed 画面専用の再試行ボタン）を一般化し、review ヘッダーと done 画面の
+   * 双方から呼べるようにしたもの。approve() と同様、埋め込み失敗は致命的エラーにせず
+   * exported_no_embed に倒す
+   */
+  const exportJsonlWithEmbeddings = useCallback(async () => {
     setPhase('retrying_embed')
     setProgress('埋め込みを再計算中…')
     try {
       const ollamaConfig = loadOllamaConfig()
       const meta = sruMeta ?? makeFallbackMeta(bookId)
       const bookTitle = meta.titleOriginal ?? meta.titleRomanized
+      const markedEntries = entries.map(e => ({ ...e, reviewed: true }))
 
-      const embedResults = await embedEntries(entries, bookTitle, {
-        model: ollamaConfig.embedModel,
-        ollamaUrl: ollamaConfig.baseUrl,
-        onProgress: (done, total) => setProgress(`エントリ埋め込み ${done}/${total}件…`),
-      })
+      let embedResults: Awaited<ReturnType<typeof embedEntries>> = []
+      let embedError = false
+      try {
+        embedResults = await embedEntries(markedEntries, bookTitle, {
+          model: ollamaConfig.embedModel,
+          ollamaUrl: ollamaConfig.baseUrl,
+          onProgress: (done, total) => setProgress(`エントリ埋め込み ${done}/${total}件…`),
+        })
+      } catch (e) {
+        console.warn('[ReviewView] エントリ埋め込み失敗 (スキップ):', e)
+        embedError = true
+      }
 
       setProgress('書籍レベル埋め込みを計算中…')
       let bookEmbedding: number[] | undefined
@@ -322,17 +380,22 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
         })
       } catch (e) {
         console.warn('[ReviewView] 書籍埋め込み失敗 (スキップ):', e)
+        embedError = true
       }
 
       setProgress('JSONL 上書き中…')
       const now = String(Math.floor(Date.now() / 1000))
+      await pipeline.writeStage(bookId, 'review', markedEntries)
       await upsertBookRecord(meta, ocrPages.length, ollamaConfig.model, now, bookEmbedding)
-      await upsertEntryRecords(bookId, entries, embedResults)
-      await pipeline.setStatus(bookId, 'exported')
-      setEmbedFailed(false)
+      await upsertEntryRecords(bookId, markedEntries, embedResults)
+      const newStatus = embedError ? 'exported_no_embed' : 'exported'
+      await pipeline.setStatus(bookId, newStatus)
+      setEmbedFailed(embedError)
+      setAlreadyExported(true)
+      setJsonlStale(false)
       setPhase('done')
     } catch (e) {
-      setError(`再埋め込みエラー: ${e}`)
+      setError(`JSONL再出力エラー: ${e}`)
       setPhase('error')
     }
   }, [bookId, entries, ocrPages, sruMeta])
@@ -346,8 +409,24 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
     </button>
   )
 
-  // 出力先の絶対パスを含む長文がヘッダーの操作行を押し出すため、メッセージ行を分離して表示する
-  const showPdfMessage = phase === 'review' && !!pdfMessage
+  // 目次PDF出力は承認前後どちらでも実行可能なため、review ヘッダーと done 画面 2 種の
+  // 3 箇所から参照する（ciniiButton と同じ理由で変数化）
+  const pdfButton = (
+    <button className="btn-secondary" onClick={handleExportPdf}>
+      PDF出力
+    </button>
+  )
+
+  // JSONL再出力（埋め込み付き）。review ヘッダー（alreadyExported時のみ）と done 画面 2 種から参照する
+  const exportJsonlButton = (
+    <button className="btn-primary" onClick={exportJsonlWithEmbeddings}>
+      JSONL再出力（埋め込み付き）
+    </button>
+  )
+
+  // 出力先の絶対パスを含む長文がヘッダーの操作行を押し出すため、メッセージ行を分離して表示する。
+  // done 画面（embedFailed / 承認完了）でも PDF出力を実行できるため phase === 'done' も対象に含める
+  const showPdfMessage = (phase === 'review' || phase === 'done') && !!pdfMessage
   const showCiniiMessage = phase === 'review' && !!ciniiMessage
   const showProgress = (phase === 'approving' || phase === 'structuring') && !!progress
 
@@ -372,9 +451,11 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
           <p>Ollama の埋め込みモデル（bge-m3）を確認してから再試行できます。</p>
           <div className="review-done-actions">
             <button className="btn-secondary" onClick={onBack}>← キューに戻る</button>
-            <button className="btn-primary" onClick={retryEmbed}>再埋め込みを実行</button>
+            {exportJsonlButton}
+            {pdfButton}
             {ciniiButton}
           </div>
+          {showPdfMessage && <p className="progress-text">{pdfMessage}</p>}
           {ciniiMessage && <p className="progress-text">{ciniiMessage}</p>}
         </div>
       )
@@ -385,8 +466,11 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
         <p><code>data/output/entries.jsonl</code> に出力しました。</p>
         <div className="review-done-actions">
           <button className="btn-primary" onClick={onBack}>← キューに戻る</button>
+          {exportJsonlButton}
+          {pdfButton}
           {ciniiButton}
         </div>
+        {showPdfMessage && <p className="progress-text">{pdfMessage}</p>}
         {ciniiMessage && <p className="progress-text">{ciniiMessage}</p>}
       </div>
     )
@@ -458,10 +542,9 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
               <button className="btn-secondary" onClick={runStructuring}>
                 再構造化
               </button>
-              <button className="btn-secondary" onClick={handleExportPdf}>
-                PDF出力
-              </button>
+              {pdfButton}
               {ciniiButton}
+              {alreadyExported && exportJsonlButton}
               <button className="btn-approve" onClick={handleApproveClick}>
                 承認 → 出力
               </button>
@@ -470,6 +553,14 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
           {phase === 'review' && (
             <span className={`save-status save-status-${saveStatus}`}>
               {saveStatus === 'saving' ? '保存中…' : saveStatus === 'unsaved' ? '未保存' : '✓ 保存済み'}
+            </span>
+          )}
+          {phase === 'review' && alreadyExported && jsonlStale && (
+            <span
+              className="jsonl-stale-badge"
+              title="entries.jsonl / books.jsonl はまだ前回出力時点の内容です。「JSONL再出力（埋め込み付き）」で最新の内容に更新できます。"
+            >
+              JSONL未再出力
             </span>
           )}
         </div>
@@ -558,7 +649,7 @@ export function ReviewView({ bookId, onBack }: ReviewViewProps) {
               )}
               <EntryEditor
                 entries={entries}
-                onChange={setEntries}
+                onChange={handleEntriesChange}
                 filterPageIdx={currentPage?.page_index}
               />
             </>

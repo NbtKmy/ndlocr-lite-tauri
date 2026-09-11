@@ -63,10 +63,16 @@ export function toIsoWithOffset(d: Date): string {
   )
 }
 
-/** ReviewedEntry から出力用の5項目のみを取り出す */
-function toCiniiTocEntry(e: ReviewedEntry): CiniiTocEntry {
+/**
+ * ReviewedEntry から出力用の5項目のみを取り出す。
+ * `seq` はここで 1 始まりの表示用連番（`presentationSeq`）に置き換える。
+ * 内部の `seq`（review.json / entries.jsonl / `id` の `${book_id}:${seq}` に使われる永続キー）
+ * とは別物で、レビュー中に削除されたエントリの分だけ内部 seq に欠番（例: 2,3,6,8）が生じても
+ * CiNii 出力上は 1,2,3,4 のように詰まった連番として見せる。
+ */
+function toCiniiTocEntry(e: ReviewedEntry, presentationSeq: number): CiniiTocEntry {
   return {
-    seq: e.seq,
+    seq: presentationSeq,
     level: e.level,
     heading_text: e.heading_text,
     page_number: e.page_number,
@@ -78,6 +84,12 @@ function toCiniiTocEntry(e: ReviewedEntry): CiniiTocEntry {
  * review.json + sruMeta + 採用済み NCID から CiniiBookRecord を組み立てる。
  * 単体出力（exportCiniiBook）とバッチ出力（ciniiBatchExport.ts）で共有する。
  * toc は毎回 entries から作り直すため、既存 jsonl 行の古い toc を引き継がない。
+ *
+ * toc[].seq は配列順に 1..N で振り直した「表示用の連番」であり、review.json /
+ * entries.jsonl 側の内部 seq（永続キー、`id` = `${book_id}:${seq}` の一部）とは
+ * 意図的に切り離されている。レビュー画面でエントリを削除すると内部 seq には欠番が
+ * できるが（EntryEditor.remove() は詰め直しをしない）、CiNii 側では常に 1 始まりの
+ * 連番として出力する。渡された entries 配列自体は変更しない（非破壊）。
  */
 export function buildCiniiRecord(
   bookId: string,
@@ -93,7 +105,7 @@ export function buildCiniiRecord(
     pub_year: sruMeta.pubYear,
     isbn: sruMeta.isbn,
     exported_at: exportedAt,
-    toc: entries.map(toCiniiTocEntry),
+    toc: entries.map((e, i) => toCiniiTocEntry(e, i + 1)),
   }
 }
 

@@ -292,6 +292,17 @@ npm run mcp-server
 
 ## 変更履歴
 
+### v0.19.0（2026-09-11）
+
+- fix: 出力済み（`exported` / `exported_no_embed`）の書籍を ReviewView で開き直したとき、以前は承認済みでも `draft.json` から読み込んでしまい画面と確定データ（`review.json`）が食い違うことがあった。`exported` 状態でも `review.json` を優先して読み込むよう修正（`review.json` が無い・空・読めない場合のみ `draft.json` にフォールバック）
+- feat: 出力済みの書籍を開いて編集すると、自動保存が `draft.json` だけでなく `review.json` にも反映されるようにした。これにより、CiNii出力・CiNii一括出力（いずれも `review.json` を参照）が編集後の最新内容を読めるようになる。ヘッダーに「JSONL未再出力」バッジを追加し、`entries.jsonl` / `books.jsonl` が編集後の内容にまだ追随していないことを明示（埋め込みの自動再計算はコストが高いため行わない。ユーザーが任意のタイミングで再出力する運用とした）。なお自動保存とバッジ表示の対象は EntryEditor 経由の人的編集のみで、書籍を開いた直後の初回描画では発火しない（開いただけで `review.json` を書き直したりバッジが点灯したりしない）
+- feat: 「JSONL再出力（埋め込み付き）」ボタンを追加。承認フロー（出力先確認ダイアログ）を経ずに、`review.json` の最新内容から埋め込みを再計算して `books.jsonl` / `entries.jsonl` を上書きできる。従来 `embedFailed` 画面専用だった「再埋め込みを実行」ボタンを一般化したもので、review ヘッダー（出力済みの書籍を編集中のみ表示）と done 画面の両方から実行可能
+- feat: 「PDF出力」ボタンを両方の done 画面（承認完了 / 埋め込みなしで出力済み）にも追加。従来は承認前の画面にしかなく、承認後は目次PDFを再生成する手段がなかった
+- fix: `approve()`（承認 → 出力）が `books.jsonl` / `entries.jsonl` への書き込みに追記方式（`writeBookRecord` / `writeEntryRecords`）を使っていたため、同じ書籍を再承認すると行が重複していた。`upsertBookRecord` / `upsertEntryRecords` に統一し、再承認しても1書籍1行に収束するよう修正。なお、既存データに残っている重複行は本修正では削除せず、今後の再出力（再承認・JSONL再出力）で自然に1行へ収束する運用とした。使われなくなった `writeBookRecord` / `writeEntryRecords` は `src/output/writer.ts` から削除
+- feat: CiNii JSON出力（単体・一括）の `toc[].seq` を、内部の永続的な `seq`（`review.json` / `entries.jsonl` の `id` に使われるキー）から切り離し、配列順に 1..N の表示用連番として振り直すようにした。レビュー中にエントリを削除すると内部 `seq` には欠番ができるが（`EntryEditor.remove()` は詰め直しをしない）、CiNii出力上は常に連番として見せる
+- 補足: 本バージョンの調査で、目次PDF出力（ReviewViewの「PDF出力」）自体は以前から正常に動作していたことを確認した。ファイルのタイムスタンプが古く見えたのは、`fs::write` が既存ファイルを上書きすると更新日時は新しくなるが作成日時（Finderの「作成日」列）は初回作成時のまま残るというOS挙動によるもので、機能の不具合ではない
+- feat: InboxView の書籍一覧から複数書籍を選択して、埋め込み付きの `books.jsonl` / `entries.jsonl` を一括で再出力できるようにした（`src/output/jsonlBatchExport.ts`）。CiNii JSON一括出力と同じチェックボックス選択・「全選択」「全解除」を共有し、パネルの見出しも「一括出力」に一般化した。埋め込み計算はOllamaへの逐次リクエストがボトルネックになるため、複数書籍を並列処理せず1冊ずつ順番に処理する。書籍ごとに `review.json` を読んで最新の内容（承認後の手修正を含む）から埋め込みを再計算し、`upsertBookRecord` / `upsertEntryRecords` で書き込むため、繰り返し実行しても行が重複しない。埋め込み計算に失敗した書籍は処理を止めず、その書籍だけステータスを `exported_no_embed` にして続行する（レコード自体は埋め込みなしで書き込まれる）。実行中は書籍と書籍の間でのみ中断を確認する「中断」ボタンを用意しており、途中で止めても処理済みの書籍はそのまま残り、未処理の書籍には一切触れない。結果は「出力N件 / 埋め込みなしN件 / スキップN件」のパネルとスキップ理由一覧（未承認 / 書誌情報未取得 / OCRデータなし）で表示するのみで、CiNii出力と異なりログファイルは書き出さない（従来から `books.jsonl` / `entries.jsonl` にログを残す仕組みがなかったため、踏襲した設計判断）
+
 ### v0.18.1（2026-09-10）
 
 - fix: GitHub Actions の Windows ビルドが `actions/checkout` で失敗する問題を修正。グロブパターンがそのままディレクトリ名として作られた `src/**/CLAUDE.md` がコミットされており、Windows は `*` をパス名に使えないため checkout が `invalid path` で異常終了していた。当該ファイルを削除し、再発防止として `.gitignore` に `src/\*\*/` を追加

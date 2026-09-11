@@ -5,6 +5,8 @@ import { structureToc } from '../ai/toc-structuring'
 import { resolveIsbn, searchMonthlyAcquisitions } from '../ai/sru-client'
 import type { ResolveFailReason, SruMetadata } from '../ai/sru-client'
 import { exportCiniiBatch } from '../output/ciniiBatchExport'
+import { exportJsonlBatch } from '../output/jsonlBatchExport'
+import type { JsonlBatchResult, JsonlBatchProgress, JsonlBatchSkipReason } from '../output/jsonlBatchExport'
 import { loadSruConfig, saveSruConfig, DEFAULT_SRU_CONFIG } from '../utils/sruConfig'
 import type { SruConfig } from '../utils/sruConfig'
 import { loadOllamaConfig, saveOllamaConfig, DEFAULT_OLLAMA_CONFIG } from '../utils/ollamaConfig'
@@ -69,6 +71,13 @@ const CINII_SKIP_LABEL: Record<CiniiSkipReason, string> = {
   api_error: 'CiNii APIエラー',
 }
 
+const JSONL_SKIP_LABEL: Record<JsonlBatchSkipReason, string> = {
+  not_reviewed: '未承認',
+  no_meta: '書誌情報未取得',
+  no_ocr: 'OCRデータなし',
+  error: 'エラー',
+}
+
 interface IsbnResolution {
   isbn: string
   status: 'resolving' | 'ok' | ResolveFailReason | 'duplicate'
@@ -127,12 +136,20 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
   const [defaultOutputDir, setDefaultOutputDir] = useState('')
   const [settingsSaved, setSettingsSaved] = useState(false)
 
-  // CiNii JSON一括出力（複数書籍選択 → 1ファイル）
+  // 一括出力（複数書籍選択 → CiNii JSON一括出力 / JSONL一括再出力、選択セットは共通）
   const [selectedBookIds, setSelectedBookIds] = useState<Set<string>>(new Set())
   const [ciniiBatchBusy, setCiniiBatchBusy] = useState(false)
   const [ciniiBatchProgress, setCiniiBatchProgress] = useState<{ done: number; total: number } | null>(null)
   const [ciniiBatchResult, setCiniiBatchResult] = useState<CiniiBatchResult | null>(null)
   const [ciniiBatchNoMetaCount, setCiniiBatchNoMetaCount] = useState(0)
+
+  // JSONL一括再出力（埋め込み付き、複数書籍選択 → books.jsonl/entries.jsonlをupsert）
+  const [jsonlBatchBusy, setJsonlBatchBusy] = useState(false)
+  const [jsonlBatchProgress, setJsonlBatchProgress] = useState<JsonlBatchProgress | null>(null)
+  const [jsonlBatchResult, setJsonlBatchResult] = useState<JsonlBatchResult | null>(null)
+  // batch-OCR中断（App.tsxのcancelRefパターンに倣う。stateにするとレンダーの度に再生成されるため
+  // 中断判定にはrefを使う）
+  const jsonlAbortRef = useRef(false)
 
   // 設定パネルが開かれたときに最新の設定を読み込む
   useEffect(() => {
@@ -504,6 +521,36 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
     }
   }, [ciniiEligibleBooks, selectedBookIds])
 
+  const handleJsonlBatchExport = useCallback(async () => {
+    const targetIds = ciniiEligibleBooks
+      .filter(b => selectedBookIds.has(b.book_id))
+      .map(b => b.book_id)
+    if (targetIds.length === 0) return
+
+    jsonlAbortRef.current = false
+    setJsonlBatchBusy(true)
+    setJsonlBatchResult(null)
+    setJsonlBatchProgress({ bookDone: 0, bookTotal: targetIds.length, bookId: '', entryDone: 0, entryTotal: 0 })
+
+    try {
+      const result = await exportJsonlBatch(targetIds, {
+        onProgress: (p) => setJsonlBatchProgress(p),
+        shouldAbort: () => jsonlAbortRef.current,
+      })
+      setJsonlBatchResult(result)
+    } catch (e) {
+      setMessage(`JSONL一括再出力エラー: ${e}`)
+    } finally {
+      setJsonlBatchBusy(false)
+      setJsonlBatchProgress(null)
+      await refresh()
+    }
+  }, [ciniiEligibleBooks, selectedBookIds, refresh])
+
+  const handleJsonlBatchAbort = useCallback(() => {
+    jsonlAbortRef.current = true
+  }, [])
+
   return (
     <div className="inbox-view" style={hidden ? { display: 'none' } : undefined}>
       {/* ── 書籍追加パネル ── */}
@@ -823,36 +870,54 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
         )}
       </div>
 
-      {/* ── CiNii JSON一括出力（承認済み・出力済みの書籍を複数選択） ── */}
+      {/* ── 一括出力（承認済み・出力済みの書籍を複数選択 → CiNii JSON一括出力 / JSONL一括再出力） ── */}
       {ciniiEligibleBooks.length > 0 && (
-        <section className="cinii-batch-panel">
-          <div className="cinii-batch-actions">
-            <span className="cinii-batch-count">
-              CiNii出力対象: {ciniiEligibleBooks.length}冊中 {selectedBookIds.size}冊選択
+        <section className="batch-export-panel">
+          <div className="batch-export-actions">
+            <span className="batch-export-count">
+              一括出力対象: {ciniiEligibleBooks.length}冊中 {selectedBookIds.size}冊選択
             </span>
             <button
               className="btn-secondary"
               onClick={selectAllCinii}
-              disabled={ciniiBatchBusy || selectedBookIds.size === ciniiEligibleBooks.length}
+              disabled={ciniiBatchBusy || jsonlBatchBusy || selectedBookIds.size === ciniiEligibleBooks.length}
             >
               全選択
             </button>
             <button
               className="btn-secondary"
               onClick={deselectAllCinii}
-              disabled={ciniiBatchBusy || selectedBookIds.size === 0}
+              disabled={ciniiBatchBusy || jsonlBatchBusy || selectedBookIds.size === 0}
             >
               全解除
             </button>
             <button
               className="btn-secondary"
               onClick={handleCiniiBatchExport}
-              disabled={ciniiBatchBusy || selectedBookIds.size === 0}
+              disabled={ciniiBatchBusy || jsonlBatchBusy || selectedBookIds.size === 0}
             >
               {ciniiBatchBusy
                 ? `照会中… ${ciniiBatchProgress?.done ?? 0}/${ciniiBatchProgress?.total ?? selectedBookIds.size}`
                 : `選択をCiNii JSON一括出力（${selectedBookIds.size}件）`}
             </button>
+            <button
+              className="btn-secondary"
+              onClick={handleJsonlBatchExport}
+              disabled={ciniiBatchBusy || jsonlBatchBusy || selectedBookIds.size === 0}
+            >
+              {jsonlBatchBusy
+                ? `再出力中… ${Math.min((jsonlBatchProgress?.bookDone ?? 0) + 1, jsonlBatchProgress?.bookTotal ?? selectedBookIds.size)}/${jsonlBatchProgress?.bookTotal ?? selectedBookIds.size}冊${
+                    jsonlBatchProgress && jsonlBatchProgress.entryTotal > 0
+                      ? ` — 埋め込み ${jsonlBatchProgress.entryDone}/${jsonlBatchProgress.entryTotal}件`
+                      : ''
+                  }`
+                : `選択をJSONL一括再出力（埋め込み付き）（${selectedBookIds.size}件）`}
+            </button>
+            {jsonlBatchBusy && (
+              <button className="btn-batch-abort" onClick={handleJsonlBatchAbort}>
+                中断
+              </button>
+            )}
           </div>
           {ciniiBatchResult && (
             <div className="cinii-batch-result">
@@ -884,6 +949,26 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
               )}
             </div>
           )}
+          {jsonlBatchResult && (
+            <div className="jsonl-batch-result">
+              <p className="progress-text">
+                出力 {jsonlBatchResult.okCount}件 / 埋め込みなし {jsonlBatchResult.noEmbedCount}件 / スキップ {jsonlBatchResult.skipCount}件
+                {jsonlBatchResult.aborted && '（中断されました。処理済みの書籍はそのまま反映されています）'}
+              </p>
+              {jsonlBatchResult.items.some(i => i.status === 'skipped') && (
+                <ul className="jsonl-batch-skip-list">
+                  {jsonlBatchResult.items
+                    .filter(i => i.status === 'skipped')
+                    .map(i => (
+                      <li key={i.bookId}>
+                        {i.bookId}: {JSONL_SKIP_LABEL[i.reason ?? 'error']}
+                        {i.detail ? `（${i.detail}）` : ''}
+                      </li>
+                    ))}
+                </ul>
+              )}
+            </div>
+          )}
         </section>
       )}
 
@@ -903,7 +988,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 ciniiEligible={ciniiEligibleIds.has(book.book_id)}
                 selected={selectedBookIds.has(book.book_id)}
                 onToggleSelect={toggleBookSelect}
-                selectDisabled={ciniiBatchBusy}
+                selectDisabled={ciniiBatchBusy || jsonlBatchBusy}
               />
             ))}
           </div>
@@ -926,7 +1011,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 ciniiEligible={ciniiEligibleIds.has(book.book_id)}
                 selected={selectedBookIds.has(book.book_id)}
                 onToggleSelect={toggleBookSelect}
-                selectDisabled={ciniiBatchBusy}
+                selectDisabled={ciniiBatchBusy || jsonlBatchBusy}
               />
             ))}
           </div>
@@ -949,7 +1034,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 ciniiEligible={ciniiEligibleIds.has(book.book_id)}
                 selected={selectedBookIds.has(book.book_id)}
                 onToggleSelect={toggleBookSelect}
-                selectDisabled={ciniiBatchBusy}
+                selectDisabled={ciniiBatchBusy || jsonlBatchBusy}
               />
             ))}
           </div>
@@ -972,7 +1057,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 ciniiEligible={ciniiEligibleIds.has(book.book_id)}
                 selected={selectedBookIds.has(book.book_id)}
                 onToggleSelect={toggleBookSelect}
-                selectDisabled={ciniiBatchBusy}
+                selectDisabled={ciniiBatchBusy || jsonlBatchBusy}
               />
             ))}
           </div>
@@ -995,7 +1080,7 @@ export function InboxView({ onReview, settingsOpen, onSettingsClose, hidden = fa
                 ciniiEligible={ciniiEligibleIds.has(book.book_id)}
                 selected={selectedBookIds.has(book.book_id)}
                 onToggleSelect={toggleBookSelect}
-                selectDisabled={ciniiBatchBusy}
+                selectDisabled={ciniiBatchBusy || jsonlBatchBusy}
               />
             ))}
           </div>

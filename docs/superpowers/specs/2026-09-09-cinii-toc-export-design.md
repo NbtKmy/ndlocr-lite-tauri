@@ -4,6 +4,13 @@
 - 対象バージョン: v0.17.0 〜 v0.17.1
 - 状態: 実装済み（v0.17.0 で導入、v0.17.1 で `http_get` タイムアウト対応と単一 OR クエリ化を追加）
 
+> **v0.19.0 での追記**: 以下2点を変更した。詳細は各該当節を参照。
+> 1. `toc[].seq` を内部 `seq`（永続キー）から切り離し、配列順の 1 始まり表示用連番に振り直すようにした（§3.1）。
+> 2. 「承認後に編集した場合の扱い」（§7）で述べていた「画面の内容と出力内容が食い違う」問題を解消した。
+>    ReviewView が出力済み書籍を開き直す際に `review.json` を優先して読み込み、その後の編集も自動保存で
+>    `review.json` に反映されるようになったため、D1（出力対象は `review.json` のみ）は維持しつつ、
+>    その `review.json`自体が編集内容を常に反映するようになった。
+
 ## 1. 目的と背景
 
 既存の JSONL 出力（`books.jsonl` / `entries.jsonl`）は postgres 投入を前提としており、bge-m3 の 1024 次元ベクトルを各レコードに埋め込んでいる。このため 1 書籍あたりのデータ量が大きく、ベクトルを必要としない用途（他機関へのデータ提供、書誌同定作業、目次データの単純な受け渡し）には扱いにくい。
@@ -63,6 +70,8 @@
 | `toc` | `work/{mmsId}/review.json` | 承認時に確定したエントリ（第 6 章） |
 
 `toc` の各要素は `seq` / `level` / `heading_text` / `page_number` / `contributor` の 5 項目のみとする。`ReviewedEntry` が持つ `raw_ocr_text` / `source_page_index` / `confidence` / `reviewed` / `edited` / `embedding` は**出力しない**。人間のレビューを通った確定データを出力対象とするため、OCR の中間情報と信頼度スコアは受け取り側にとって意味を持たない。
+
+**`toc[].seq` は表示用の1始まり連番（v0.19.0）**: `buildCiniiRecord()` は `entries` 配列を順に走査し、その位置（`i + 1`）を `seq` として振り直す。`review.json` / `entries.jsonl` 側の内部 `seq`（`id` = `${book_id}:${seq}` に使われる永続キー）とは意図的に切り離しており、`draft.json` / `review.json` / `entries.jsonl` / `id` は一切変更しない。レビュー画面でエントリを削除すると `EntryEditor.remove()` は詰め直しをしないため内部 `seq` に欠番ができるが（例: 2,3,6,8）、CiNii出力（単体・一括共通）では常に 1,2,3,4 のように詰まった連番として出力する。渡された `entries` 配列自体は非破壊（`buildCiniiRecord` はコピーを返すのみで変更しない）。
 
 ### 3.2 `cinii_export.log`
 
@@ -343,11 +352,15 @@ ReviewView のヘッダー（`.review-header-actions`）に `CiNii JSON出力` �
 
 スキップは業務上の正常な結果であり、`.error` 系の赤表示にはしない。`.progress-text` のまま表示する。
 
-### 承認後に編集した場合の扱い
+### 承認後に編集した場合の扱い（v0.19.0 で変更）
 
-ReviewView は承認済み（status = `exported`）の書籍を開き直すと `draft.json` から読み込んで `phase = 'review'` に戻る（`src/views/ReviewView.tsx` の `load()` 内、`readStage(bookId, 'draft')` のフォールバック分岐）。このため、承認後に画面上でエントリを編集してから CiNii 出力を押すと、画面の内容と出力内容が食い違う。
+**旧仕様（v0.17.0〜v0.18.x）**: ReviewView は承認済み（status = `exported`）の書籍を開き直すと `draft.json` から読み込んで `phase = 'review'` に戻っていた（`readStage(bookId, 'draft')` のフォールバック分岐）。このため、承認後に画面上でエントリを編集してから CiNii 出力を押すと、画面の内容と出力内容（`review.json`）が食い違う問題があった。当時はこれを仕様として受け入れ、メッセージに「承認時の確定データ」と明示することで誤解を防ぐ方針を取っていた。
 
-これは仕様として受け入れ、メッセージに「承認時の確定データ」と明示することで誤解を防ぐ。編集内容を反映したい場合は再度「承認 → 出力」を実行し、`review.json` を更新してから CiNii 出力を押す。
+**現行仕様（v0.19.0〜）**: この食い違いを解消した。
+- `load()` は status が `exported` / `exported_no_embed` のとき `review.json` を優先して読み込む（無い・空・読めない場合のみ `draft.json` にフォールバック）。
+- 出力済み書籍を編集した場合、entries変更のデバウンス自動保存が `draft.json` に加えて `review.json` にも書き込む（`reviewed: true` を付与）。
+- これにより、画面で編集した内容は自動保存のたびに `review.json` に反映され、CiNii出力（単体・一括）は常にその時点の最新内容を読む。D1（出力対象は `review.json` のみ、画面 state の `entries` は使わない）自体は変更していない。`review.json` そのものが編集を追随するようになっただけである。
+- ただし `entries.jsonl` / `books.jsonl`（bge-m3 埋め込み込みの正式出力）は自動更新しない（埋め込み計算のコストが高いため）。ReviewView ヘッダーに「JSONL未再出力」バッジを表示し、「JSONL再出力（埋め込み付き）」ボタンで手動反映する運用とした。
 
 ## 8. スキップ条件一覧
 
@@ -365,6 +378,7 @@ ReviewView は承認済み（status = `exported`）の書籍を開き直すと `
 - **D1: 出力対象は `review.json` のみ**（画面 state の `entries` は使わない）
   `reviewed` フラグはエントリ単位の人的チェック印として機能していない。LLM 構造化直後と draft 読込時は全件 `false`、承認時は全件 `true` に一括で書き換えられ、EntryEditor の Markdown 編集モードは既存行も含めて `false` に潰す（`src/views/EntryEditor.tsx:40`）。一方で行追加は `true` を付ける（同 `:86`）。したがって `reviewed === true` によるエントリ単位のフィルタは成立しない。
   代わりに「承認を通ったかどうか」を書籍単位で判定する。承認時に `pipeline.writeStage(bookId, 'review', markedEntries)` で書かれる `review.json` の存在がその判定に使え、内容もそのまま確定データとして使える。
+  **v0.19.0 での補足**: この決定自体は変わっていないが、`review.json` を更新するタイミングを「承認時のみ」から「出力済み書籍の編集時（自動保存のたび）」にも拡張した（§7）。CiNii出力が読む対象は引き続き `review.json` のみである。
 
 - **D2: `load()` を拡張せず、ボタン押下時に `review.json` を読む**
   承認済み状態を `phase` に反映する案（`load()` で `exported` 系 status を検出して `phase = 'done'` にする）は、承認フロー・draft 自動保存・`CLAUDE.md` の状態機械に波及する。今回の目的には不要なリスクであり、押下時の読み込みで同じ結果が得られる。

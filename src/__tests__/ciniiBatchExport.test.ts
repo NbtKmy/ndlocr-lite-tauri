@@ -267,6 +267,30 @@ describe('exportCiniiBatch', () => {
     expect(written[0].pub_year).toBe('2012')
   })
 
+  it('内部seqに欠番があってもtoc.seqは1始まりに詰め直され、heading_textの順序は保たれる', async () => {
+    const gapped: ReviewedEntry[] = [2, 3, 6, 8].map(seq => ({ ...entry(seq), heading_text: `見出し${seq}` }))
+    readStage.mockResolvedValue(gapped)
+    lookup.mockResolvedValue({ ncid: 'BBX', hits: 1, queriedIsbns: ['9784167137113'] })
+
+    const r = await exportCiniiBatch([{ bookId: 'B1', sruMeta: meta() }], FIXED)
+
+    const jsonCall = findAppend(r.fileName!)
+    const written = JSON.parse(jsonCall[1] as string) as CiniiBookRecord[]
+    expect(written[0].toc.map(t => t.seq)).toEqual([1, 2, 3, 4])
+    expect(written[0].toc.map(t => t.heading_text)).toEqual(['見出し2', '見出し3', '見出し6', '見出し8'])
+  })
+
+  it('buildCiniiRecordはentries配列を変更しない（非破壊）', async () => {
+    const gapped: ReviewedEntry[] = [2, 3, 6, 8].map(seq => entry(seq))
+    const snapshot = gapped.map(e => ({ ...e }))
+    readStage.mockResolvedValue(gapped)
+    lookup.mockResolvedValue({ ncid: 'BBX', hits: 1, queriedIsbns: ['9784167137113'] })
+
+    await exportCiniiBatch([{ bookId: 'B1', sruMeta: meta() }], FIXED)
+
+    expect(gapped).toEqual(snapshot)
+  })
+
   it('ファイル名がcinii_batch_YYYYMMDD-HHmmss.json形式（秒付き）になる', async () => {
     readStage.mockResolvedValue([entry(1)])
     lookup.mockResolvedValue({ ncid: 'BBX', hits: 1, queriedIsbns: ['9784167137113'] })
